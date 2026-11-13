@@ -1,10 +1,10 @@
 [Unit]
-Description=Delete orphaned runtime-scoped PostgreSQL databases after one-hour absence
+Description=Delete orphaned runtime-scoped PostgreSQL databases after five-minute absence
 Requires=docker.service
 After=docker.service
 
 [Service]
 Type=oneshot
 Environment=OH_PG_ENABLE_DELETION=I_UNDERSTAND
-ExecStart=/usr/bin/flock -n /run/openhands-postgres-manager.lock /usr/local/sbin/openhands-postgres-manager cleanup --apply
+ExecStart=/usr/bin/flock -w 20 /run/openhands-postgres-manager.lock /usr/local/sbin/openhands-postgres-manager cleanup --apply
 TimeoutStartSec=180
