@@ -1,0 +1,11 @@
+[Unit]
+Description=Opt-in PostgreSQL cleanup for permanently deleted OpenHands conversations
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=24h
+AccuracySec=5min
+Unit=openhands-postgres-reaper.service
+
+[Install]
+WantedBy=timers.target
