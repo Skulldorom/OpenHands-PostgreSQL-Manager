@@ -2,7 +2,7 @@
 
 Self-hosted, host-side PostgreSQL test database provisioning for isolated [OpenHands](https://github.com/All-Hands-AI/OpenHands) Agent Canvas conversation containers.
 
-**Status:** initial implementation; validate against your OpenHands API and deployment before enabling destructive cleanup.
+**Status:** provisioning verified on a self-hosted OpenHands 1.62.0 LXC; automated deletion implementation needs a disposable-conversation end-to-end test before being enabled.
 
 ## Why
 
@@ -19,7 +19,8 @@ OpenHands conversation containers can run with `CapDrop: ALL` and `no-new-privil
 - Provides systemd provisioning timer (one-minute polling)
 - Provides a read-only `audit` command to classify tracked, legacy, untracked, and missing PostgreSQL databases
 - Refuses destructive deletion when a database role is still referenced by another state record
-- Provides conservative deletion analysis with authenticated API checks and 24-hour grace (no automatic destructive deletion)
+- Supports fully paginated authenticated conversation-catalog cleanup checks with a 24-hour grace period (including when all runtimes are suspended)
+- Includes a separate, explicitly opt-in daily destructive reaper with one-database-per-run limit (no automatic destructive deletion)
 - Ships a non-destructive cleanup timer; **automatic destructive deletion is off**
 
 ## Quick start
