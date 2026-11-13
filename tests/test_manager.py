@@ -348,8 +348,42 @@ class ManagerTests(unittest.TestCase):
             m.audit(state)
         self.assertIn("RUNTIME_KEEP " + role, output.getvalue())
 
-    def test_cleanup_grace_at_least_one_hour(self):
-        self.assertGreaterEqual(m.GRACE, 3600)
+    def test_cleanup_grace_at_least_five_minutes(self):
+        self.assertGreaterEqual(m.GRACE, 300)
+
+
+    def test_watcher_filters_unrelated_containers(self):
+        self.assertIsNone(m.event_action({"Type": "container", "Action": "destroy",
+            "Actor": {"Attributes": {"name": "openhands-postgres"}}}))
+        self.assertIsNone(m.event_action({"Type": "image", "Action": "start",
+            "Actor": {"Attributes": {"name": "agent-server-conversation-" + "a"*36}}}))
+
+    def test_watcher_start_and_destroy_route_to_manager(self):
+        name = "agent-server-conversation-00000000-0000-4000-8000-000000000001"
+        for action, expected in (("start", "provision"), ("destroy", "cleanup"),
+                                 ("die", None), ("stop", None)):
+            self.assertEqual(m.event_action({"Type": "container", "Action": action,
+                "Actor": {"Attributes": {"name": name}}}), expected)
+
+    def test_watcher_rejects_invalid_runtime_name(self):
+        self.assertIsNone(m.event_action({"Type": "container", "Action": "destroy",
+            "Actor": {"Attributes": {"name": "agent-server-conversation-not-a-uuid"}}}))
+
+    def test_watch_trigger_cleanup_uses_existing_lock(self):
+        from unittest.mock import Mock
+        completed = Mock(returncode=0)
+        with patch.object(m.subprocess, "run", return_value=completed) as proc:
+            m.trigger_manager("cleanup")
+        argv = proc.call_args.args[0]
+        self.assertEqual(argv[:3], ["/usr/bin/flock", "-n",
+                                      "/run/openhands-postgres-manager.lock"])
+        self.assertIn("--apply", argv)
+        self.assertEqual(proc.call_args.kwargs["env"]["OH_PG_ENABLE_DELETION"],
+                         "I_UNDERSTAND")
+
+    def test_watcher_trigger_rejects_invalid_action(self):
+        with self.assertRaises(ValueError):
+            m.trigger_manager("audit")
 
 
 if __name__ == "__main__":
