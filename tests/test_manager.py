@@ -3,6 +3,8 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import unittest
+import subprocess
+import sys
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +14,16 @@ m = importlib.util.module_from_spec(spec)
 loader.exec_module(m)
 
 class ManagerTests(unittest.TestCase):
+    def test_version_needs_no_root_docker_or_state(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "openhands-postgres-manager"), "--version"],
+            capture_output=True, text=True, check=True,
+            env={"OH_PG_BASE": "/nonexistent-version-test", "PATH": ""},
+        )
+        self.assertEqual(result.stdout.strip(), f"openhands-postgres-manager {m.__version__}")
+        self.assertEqual(result.stderr, "")
+
+
     def test_id_is_deterministic_and_safe(self):
         cid = "a" * 64
         expected = "oh_" + hashlib.sha256(cid.encode()).hexdigest()[:16]
