@@ -386,5 +386,31 @@ class ManagerTests(unittest.TestCase):
             m.trigger_manager("audit")
 
 
+    def test_start_event_retries_boundedly(self):
+        from unittest.mock import Mock
+        attempts = [Mock(returncode=1), Mock(returncode=1), Mock(returncode=0)]
+        with patch.object(m.subprocess, "run", side_effect=attempts) as proc, patch.object(
+            m.time, "sleep"
+        ) as sleeping:
+            m.trigger_manager("provision")
+        self.assertEqual(proc.call_count, 3)
+        self.assertEqual(sleeping.call_count, 2)
+
+    def test_cleanup_event_never_retries_destructive_command(self):
+        from unittest.mock import Mock
+        with patch.object(m.subprocess, "run", return_value=Mock(returncode=1)) as proc:
+            m.trigger_manager("cleanup")
+        self.assertEqual(proc.call_count, 1)
+
+    def test_conversation_not_ready_reports_http_status(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as tmp:
+            key = Path(tmp) / "api-key"
+            key.write_text("sample")
+            with patch.object(m, "KEY", key), patch.object(m, "api_status", return_value=404):
+                with self.assertRaisesRegex(RuntimeError, r"HTTP 404"):
+                    m.validated_conversation("00000000-0000-4000-8000-000000000001")
+
+
 if __name__ == "__main__":
     unittest.main()
