@@ -126,3 +126,39 @@ The inventory compares PostgreSQL's `oh_`-prefixed databases against the manager
 The command is **strictly read-only** and never purges orphaned resources, rotates passwords, or modifies the manager's state. It intentionally does not claim that any database is safe to delete. The manager also refuses destructive cleanup when a role has more than one state reference, such as an adopted legacy record.
 
 Automatic cleanup is not enabled in the installed systemd unit. Run the inventory first and retain old databases until ownership, actual API deletion semantics, and backup/recovery procedures are validated end-to-end.
+
+
+## Opt-in automated database deletion
+
+The manager ships separate systemd timers: the provisioning timer runs frequently; the old `cleanup.timer` is non-destructive; the new `reaper.timer` applies deletion **only when explicitly enabled**.
+
+The reaper checks the complete authenticated OpenHands conversation catalog (including pagination) even when all Docker runtimes are suspended. A database is only eligible after an initial catalog absence and individual HTTP 404, at least 24 hours of persisted absence, and repeated checks immediately before deletion. The API must also demonstrate a valid known conversation. Runtime containers, legacy state records, and databases sharing a role with another state record are protected. The reaper deletes at most **one** database per run. Missing or invalid API results must block deletion.
+
+**Before enabling:** Back up the PostgreSQL volume and `/opt/openhands-postgres` credentials and state; verify a disposable conversation's full create/suspend/resume/delete lifecycle; run the full test suite and a dry run. Do not enable the reaper while validating the new lifecycle logic.
+
+```bash
+cd ~/OpenHands-PostgreSQL-Manager
+git pull --ff-only
+python3 -m py_compile openhands-postgres-manager
+python3 -m unittest discover -s tests -v
+bash scripts/install.sh
+openhands-postgres-manager audit
+openhands-postgres-manager cleanup
+systemctl list-timers '*openhands-postgres*'
+```
+
+After a live disposable conversation has been deleted through OpenHands and the manager's 24-hour observation behavior has been verified, explicitly opt in:
+
+```bash
+systemctl enable --now openhands-postgres-reaper.timer
+systemctl status openhands-postgres-reaper.timer --no-pager
+journalctl -u openhands-postgres-reaper.service -n 30 --no-pager
+```
+
+The first reaper execution only records the first confirmed deletion absence; a later daily execution can delete eligible data after 24 hours. Stop immediately if you see unexpected results:
+
+```bash
+systemctl disable --now openhands-postgres-reaper.timer
+```
+
+This stops future deletion checks but does not recreate anything already deleted. The reaper never deletes the shared PostgreSQL Docker volume or the PostgreSQL server.
