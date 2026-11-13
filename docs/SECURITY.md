@@ -14,8 +14,10 @@ The manager runs **only on the trusted OpenHands LXC host** with access to Docke
 
 ## Cleanup safety
 
-Automated destructive deletion is **disabled by default**. The installed cleanup systemd unit is dry-run only. Executing `cleanup --apply` additionally requires an explicit `OH_PG_ENABLE_DELETION=I_UNDERSTAND` environment setting.
+The watcher listens for Docker container `start` and `destroy` events with the OpenHands runtime naming convention; it never deletes database resources by itself. Events invoke the existing host-side manager through the shared `flock` lock. If a Docker stream disconnects, systemd restarts the watcher, and the provisioning/reaper timers reconcile missed events.
 
-Deletion requires an authenticated API 200 for a current running conversation, then an API 404 for the target, no Docker container (running or stopped) for that conversation, and 24 hours of confirmed absence with a final recheck. This reduces risk, but cannot eliminate races with an external agent runtime or a broken API/catalog. Validate the actual local API behavior before opting in.
+Only records created under `runtime:<full container ID>` are eligible for automatic deletion. Old persistent-conversation, pre-migration, and untracked databases are not automatically removed. The host-side reaper requires an explicit deletion environment gate; the installer enables neither the watcher nor the reaper.
 
-Do not automatically switch the cleanup service to `--apply` without end-to-end tests and backups.
+Deletion requires at least 300 seconds after the first confirmed container absence, repeated successful Docker daemon inspections, matching restricted role/database ownership, no other state aliases, safe host-side credential files, and zero active database sessions. No more than one database is deleted per reaper invocation. A stopped container that is still listed by Docker is retained.
+
+This is disposable **test** infrastructure: once an eligible runtime database is deleted, the previous database contents cannot be recovered without backup. Keep the shared PostgreSQL server and its Docker volume protected, and validate a disposable container lifecycle before enabling the event watcher and reaper.
