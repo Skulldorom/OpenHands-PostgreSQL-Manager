@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply verified OpenHands PostgreSQL deletion after retention
+Description=Delete orphaned runtime-scoped PostgreSQL databases after one-hour absence
 Requires=docker.service
 After=docker.service
 
