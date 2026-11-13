@@ -116,8 +116,11 @@ def validated_conversation(conv):
     if not KEY.is_file() or KEY.is_symlink():
         raise RuntimeError("OpenHands API key unavailable")
     secret = KEY.read_text().strip()
-    if not secret or api_status(conv, secret) != 200:
-        raise RuntimeError("persistent conversation not verified by authenticated API")
+    if not secret:
+        raise RuntimeError("OpenHands API authentication key is empty")
+    status = api_status(conv, secret)
+    if status != 200:
+        raise RuntimeError(f"OpenHands conversation API not ready (HTTP {status})")
 
 
 def record_for_conversation(state, conv, cid):
@@ -572,10 +575,16 @@ def trigger_manager(action):
     if action == "cleanup":
         argv.append("--apply")
         env["OH_PG_ENABLE_DELETION"] = "I_UNDERSTAND"
-    result = subprocess.run(argv, env=env, timeout=150, check=False)
-    if result.returncode:
-        print("WATCH_ACTION_RETRY_BY_TIMER", action, "status", result.returncode,
-              flush=True)
+    attempts = 3 if action == "provision" else 1
+    for attempt in range(attempts):
+        result = subprocess.run(argv, env=env, timeout=150, check=False)
+        if result.returncode == 0:
+            return
+        if attempt + 1 < attempts:
+            # The OpenHands API can lag behind Docker's start event.
+            time.sleep(3)
+    print("WATCH_ACTION_RETRY_BY_TIMER", action, "status", result.returncode,
+          flush=True)
 
 
 def watch_events():
@@ -625,7 +634,11 @@ def main():
             try:
                 runtime_provision(cid, name, conv, state)
             except Exception as exc:
-                print(f"ERROR {name}: {type(exc).__name__}", file=sys.stderr)
+                # Only print messages constructed by this program. External
+                # subprocess errors may contain passwords or SQL statements.
+                reason = (str(exc) if type(exc) is RuntimeError
+                          else type(exc).__name__)
+                print(f"ERROR {name}: {reason[:110]}", file=sys.stderr)
                 errors += 1
         if errors:
             raise RuntimeError(f"{errors} provisioning errors")
