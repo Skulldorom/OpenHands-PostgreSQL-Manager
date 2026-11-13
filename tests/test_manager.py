@@ -375,7 +375,7 @@ class ManagerTests(unittest.TestCase):
         with patch.object(m.subprocess, "run", return_value=completed) as proc:
             m.trigger_manager("cleanup")
         argv = proc.call_args.args[0]
-        self.assertEqual(argv[:3], ["/usr/bin/flock", "-n",
+        self.assertEqual(argv[:4], ["/usr/bin/flock", "-w", "20",
                                       "/run/openhands-postgres-manager.lock"])
         self.assertIn("--apply", argv)
         self.assertEqual(proc.call_args.kwargs["env"]["OH_PG_ENABLE_DELETION"],
