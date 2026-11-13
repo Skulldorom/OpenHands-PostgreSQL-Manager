@@ -1,5 +1,10 @@
 # OpenHands PostgreSQL Manager
 
+[![CI](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/skulldorom)
+
 Disposable PostgreSQL test databases for self-hosted OpenHands Agent Canvas conversation **Docker containers**.
 
 ## Lifecycle
@@ -52,3 +57,34 @@ systemctl enable --now openhands-postgres-provision.timer
 The event watcher reacts immediately to Docker `start` and `destroy` events. The provisioning timer runs every minute to recover missed start events; **it skips already-provisioned runtimes without executing commands inside them or re-reading credentials**. The reaper reconciles every five minutes. Deletion requires at least five minutes after the first observed Docker disappearance (longer if the watcher or timer misses it).
 
 Read [Operations](docs/OPERATIONS.md) for safe rollout and validation. See [Security](docs/SECURITY.md). MIT licensed.
+
+## Development and releases
+
+CI runs the unit tests on Python 3.11–3.14 and checks Python syntax, every shell script, and whitespace. Tests use mocks; they do not require Docker or PostgreSQL and do not replace the disposable-runtime lifecycle validation described above.
+
+Run the same checks locally:
+
+```bash
+python3 -m py_compile openhands-postgres-manager
+python3 -m unittest discover -s tests -v
+for script in scripts/*.sh; do bash -n "$script"; done
+git diff --check
+python3 openhands-postgres-manager --version
+```
+
+The executable's `__version__` is the runtime version source, also copied by the installer. `--version` works without root, Docker, or access to credentials.
+
+Use semantic versioning: patch for fixes, minor for compatible features, major for breaking changes. Before a release, update `__version__`, the README version badge, and [CHANGELOG.md](CHANGELOG.md) in a reviewed PR. After merging, tag that commit and push the tag:
+
+```bash
+git switch main
+git pull --ff-only
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Replace `v0.1.0` with the version being released. The release workflow runs the full CI matrix and verifies the tag matches `--version` before publishing GitHub release notes. A release does not update an installed host; installation remains explicit.
+
+## Support
+
+If this project is useful, you can [support my work on Ko-fi](https://ko-fi.com/skulldorom).

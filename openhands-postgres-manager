@@ -16,6 +16,8 @@ import urllib.request
 import urllib.parse
 import uuid
 
+__version__ = "0.1.0"
+
 BASE = Path(os.getenv("OH_PG_BASE", "/opt/openhands-postgres"))
 STATE = BASE / "managed.json"
 PG = os.getenv("OH_PG_CONTAINER", "openhands-postgres")
@@ -617,6 +619,7 @@ def watch_events():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("action", choices=["status", "provision", "cleanup", "audit", "watch"])
     parser.add_argument("--apply", action="store_true", help="Apply cleanup after safety checks")
     args = parser.parse_args()

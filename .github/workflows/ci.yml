@@ -4,21 +4,39 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
   tests:
+    name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-      - name: Syntax
+          python-version: ${{ matrix.python }}
+      - name: Python syntax
         run: python -m py_compile openhands-postgres-manager
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
-        run: bash -n scripts/*.sh
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
       - name: Whitespace
-        run: git diff --check HEAD^ HEAD || true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            git diff --check "$BASE_SHA" HEAD
+          else
+            git show --format= --check HEAD
+          fi
