@@ -295,6 +295,9 @@ def cleanup(state, apply=False):
     # Authenticate and fully paginate the persistent catalog. A runtime is
     # NOT required: OpenHands can suspend every container without deleting chats.
     catalog = conversation_catalog(secret)
+    if not catalog or not any(api_status(conv, secret) == 200 for conv in sorted(catalog)[:5]):
+        print("SKIP cleanup: catalog positive-control verification failed")
+        return
     all_runtime_conversations = {conv for _, conv in containers(True).values()}
     now = int(time.time())
     deleted_this_run = 0
