@@ -99,3 +99,9 @@ After installation, verify `systemctl status openhands-postgres-events.service` 
 Docker can emit a `start` event before the corresponding conversation becomes visible to the OpenHands API. The event watcher retries provisioning up to three times with three seconds between attempts; the separate one-minute provisioning timer still reconciles missed or delayed setups. No provisioning failure enables deletion.
 
 A safe `ERROR agent-server-conversation-...: OpenHands conversation API not ready (HTTP 404)` means the conversation is not yet available through the authenticated API. A later `READY_RUNTIME` is expected after it becomes ready. If provisioning repeatedly fails, run `openhands-postgres-manager provision` and inspect `journalctl -u openhands-postgres-events.service -n 50 --no-pager` and `journalctl -u openhands-postgres-provision.service -n 50 --no-pager`. Never print credentials or environment files.
+
+## Timer lock contention
+
+The event watcher, provision timer, and deletion reaper share one host-side advisory lock. Each invocation waits up to 20 seconds for the lock rather than immediately failing when provisioning and cleanup coincide. A timeout or non-lock failure still exits nonzero; the next timer provides reconciliation. The lock must not be removed, since concurrent state writes and PostgreSQL changes would be unsafe.
+
+To distinguish a lock timeout from another reaper error, inspect the full service journal (`journalctl -u openhands-postgres-reaper.service -n 50 --no-pager`) and run the **read-only** `openhands-postgres-manager cleanup`. Only the systemd reaper should invoke `cleanup --apply` during normal operation.
