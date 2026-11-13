@@ -1,62 +1,52 @@
 # OpenHands PostgreSQL Manager
 
-Self-hosted, host-side PostgreSQL test database provisioning for isolated [OpenHands](https://github.com/All-Hands-AI/OpenHands) Agent Canvas conversation containers.
+Disposable PostgreSQL test databases for self-hosted OpenHands Agent Canvas conversation **Docker containers**.
 
-**Status:** provisioning verified on a self-hosted OpenHands 1.62.0 LXC; automated deletion implementation needs a disposable-conversation end-to-end test before being enabled.
+## Lifecycle
 
-## Why
+1. OpenHands creates a runtime container.
+2. Host-side provisioning creates a unique PostgreSQL database and restricted login keyed to the immutable full Docker container ID.
+3. Agent runtime receives `/tmp/openhands-postgres.env` (mode 0600).
+4. While the Docker container exists — including when stopped — its database is retained.
+5. Once Docker no longer lists that container, the manager records the first observed absence.
+6. After at least **one hour** of continuous confirmed absence, the opt-in reaper may remove the database, login, and host-side credentials.
+7. If an OpenHands conversation resumes in a **new** Docker container, it receives a **new empty database**.
 
-OpenHands conversation containers can run with `CapDrop: ALL` and `no-new-privileges`. They can't reliably install and run PostgreSQL internally or launch additional Docker containers. This manager runs **on the LXC/Docker host** and gives each new conversation a dedicated PostgreSQL 17 database and restricted login. Agents only receive their own connection credentials.
+The shared `openhands-postgres` PostgreSQL 17 server and Docker volume are never destroyed by the manager.
 
-## Capabilities
+## Safety guarantees
 
-- Detects running `agent-server-conversation-<UUID>` containers and maps them to persistent conversation IDs through `/var/openhands/conversations/<conversation-id-without-hyphens>`
-- Creates an `oh_<hash>` database/role per **persistent conversation**, verified through its conversation bind mount and the authenticated OpenHands API
-- Stores credentials in a host directory (0700; files 0600)
-- Copies `/tmp/openhands-postgres.env` into the agent runtime without changing container privileges
-- Retries idempotently, reuses credentials across runtime recreation, and refuses unknown state
-- Verifies authentication and database ownership
-- Provides systemd provisioning timer (one-minute polling)
-- Provides a read-only `audit` command to classify tracked, legacy, untracked, and missing PostgreSQL databases
-- Refuses destructive deletion when a database role is still referenced by another state record
-- Supports fully paginated authenticated conversation-catalog cleanup checks with a 24-hour grace period (including when all runtimes are suspended)
-- Includes a separate, explicitly opt-in daily destructive reaper with one-database-per-run limit (no automatic destructive deletion)
-- Ships a non-destructive cleanup timer; **automatic destructive deletion is off**
+- New runtime records use `runtime:<full Docker container ID>`. Older `conv:` and legacy records are **never automatically migrated or deleted**.
+- Already-running containers with old PostgreSQL credentials are not overwritten.
+- Missing Docker, failing state checks, mismatched role or password, database ownership uncertainty, existing PostgreSQL sessions, or duplicate state references blocks deletion.
+- A stopped-but-existing Docker container is retained.
+- Every deletion requires repeated Docker inspection and at least 3,600 seconds after first observed disappearance.
+- The reaper deletes at most **one** database each run, and never automatically deletes untracked databases.
+- The installer does not enable any systemd timers. The destructive reaper is separately opt-in.
 
-## Quick start
+## Setup on the OpenHands LXC
 
-Your PostgreSQL service must already be running and healthy as `openhands-postgres`, accessible by conversation containers at `172.17.0.1:55432`.
-
-```bash
-git clone https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager.git
-cd OpenHands-PostgreSQL-Manager
-sudo bash scripts/install.sh
-sudo /usr/local/sbin/openhands-postgres-manager status
-sudo /usr/local/sbin/openhands-postgres-manager provision
-sudo /usr/local/sbin/openhands-postgres-manager audit
-sudo systemctl enable --now openhands-postgres-provision.timer
-```
-
-The installer does **not** automatically enable any timers, deploy PostgreSQL, modify existing agent containers, or turn on deletion. See [Operations](docs/OPERATIONS.md) for verification, recovery and rollback.
-
-## Agent skill
-
-Enable your existing `postgresql-integration-testing` OpenHands skill. It should load `/tmp/openhands-postgres.env` and map the `PG*` variables to the repository's test configuration. It must not use production databases, Docker commands, or the PostgreSQL superuser.
-
-## Safety
-
-Conversation containers can disappear when suspended; this is **not** proof of deletion. Cleanup checks an authenticated OpenHands conversation API, requires a live positive control, verifies no current or stopped runtime exists, and waits 24 hours after confirmed 404 before any eligible deletion. Due to unresolved API/lifecycle races, destructive cleanup remains opt-in and must be validated locally.
-
-**Legacy migration:** Existing tracked runtime-based databases are adopted only while the exact previously provisioned container is still present and its persistent conversation mount plus API identity can be verified. Otherwise, the old database and credentials remain untouched and a resumed conversation receives a newly scoped database. This prevents unsafe guessing. Legacy state is never a deletion candidate.
-
-Read [Security](docs/SECURITY.md) and [Operations](docs/OPERATIONS.md).
-
-## Development
+Prerequisites: Docker CLI on host, healthy `openhands-postgres` container, and PostgreSQL reachable at `172.17.0.1:55432` from agent containers.
 
 ```bash
+cd ~/OpenHands-PostgreSQL-Manager
+git pull --ff-only
 python3 -m py_compile openhands-postgres-manager
 python3 -m unittest discover -s tests -v
 bash -n scripts/*.sh
+bash scripts/install.sh
+openhands-postgres-manager status
+openhands-postgres-manager audit
+openhands-postgres-manager provision
+openhands-postgres-manager cleanup
 ```
 
-MIT licensed.
+After a disposable-runtime creation and removal test, explicitly enable the deletion reaper:
+
+```bash
+systemctl enable --now openhands-postgres-reaper.timer
+```
+
+Provisioning continues via the existing `openhands-postgres-provision.timer` (every minute). The reaper checks every 15 minutes; the grace interval is at least one hour from first observation of absence.
+
+Read [Operations](docs/OPERATIONS.md) for safe rollout and validation. See [Security](docs/SECURITY.md). MIT licensed.
