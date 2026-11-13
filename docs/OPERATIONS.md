@@ -47,3 +47,30 @@ sudo bash scripts/uninstall.sh
 ```
 
 This leaves PostgreSQL server, databases, volumes and credentials untouched.
+
+## Agent Server API diagnostics (OpenHands 1.62.0)
+
+This version exposes `GET /api/conversations/{conversation_id}` on the host-local Agent Server at port 18000. Older versions of this project incorrectly queried `/conversations/{conversation_id}`. Upgrade before investigating deletion cleanup.
+
+Provisioning is independent of this API and can remain enabled. Cleanup will print `SKIP cleanup: no valid positive API control` unless an authenticated `200` is verified for an active conversation. That is a **safe block**, not authorization to enable deletion.
+
+Inspect the live API specification without displaying credentials:
+
+```bash
+python3 - <<'PY'
+import json, urllib.request
+spec=json.load(urllib.request.urlopen("http://127.0.0.1:18000/openapi.json", timeout=5))
+print(spec.get("paths", {}).get("/api/conversations/{conversation_id}", {}))
+PY
+```
+
+The container name's UUID may identify a *runtime* rather than the persistent conversation. Validate that the ID maps to the actual conversation returned by the API before relying on 404s. Cleanup remains opt-in. Do not assume a 404 proves deletion without independent validation of API authorization and response semantics.
+
+After updating the repository on the LXC, redeploy the executable and restart only the provisioning timer if required:
+
+```bash
+git pull --ff-only
+bash scripts/install.sh
+openhands-postgres-manager status
+openhands-postgres-manager cleanup
+```
