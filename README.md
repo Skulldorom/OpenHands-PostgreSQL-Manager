@@ -17,6 +17,8 @@ OpenHands conversation containers can run with `CapDrop: ALL` and `no-new-privil
 - Retries idempotently, reuses credentials across runtime recreation, and refuses unknown state
 - Verifies authentication and database ownership
 - Provides systemd provisioning timer (one-minute polling)
+- Provides a read-only `audit` command to classify tracked, legacy, untracked, and missing PostgreSQL databases
+- Refuses destructive deletion when a database role is still referenced by another state record
 - Provides conservative deletion analysis with authenticated API checks and 24-hour grace (no automatic destructive deletion)
 - Ships a non-destructive cleanup timer; **automatic destructive deletion is off**
 
@@ -30,6 +32,7 @@ cd OpenHands-PostgreSQL-Manager
 sudo bash scripts/install.sh
 sudo /usr/local/sbin/openhands-postgres-manager status
 sudo /usr/local/sbin/openhands-postgres-manager provision
+sudo /usr/local/sbin/openhands-postgres-manager audit
 sudo systemctl enable --now openhands-postgres-provision.timer
 ```
 
