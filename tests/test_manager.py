@@ -412,5 +412,57 @@ class ManagerTests(unittest.TestCase):
                     m.validated_conversation("00000000-0000-4000-8000-000000000001")
 
 
+    def test_tracked_runtime_reconciliation_does_not_exec_or_check_credentials(self):
+        cid = "a" * 64
+        conv = "00000000-0000-4000-8000-000000000001"
+        state = {"runtime:" + cid: {
+            "role": m.ident(cid), "credential_file": cid + ".env",
+            "conversation": conv, "created_at": 100, "absent_since": None}}
+        with patch.object(m, "validated_conversation") as api, patch.object(
+            m, "remote_present"
+        ) as remote, patch.object(m, "credentials") as creds, patch.object(
+            m, "db_status"
+        ) as db, patch.object(m, "pg") as pg, patch.object(
+            m, "run"
+        ) as cmd, patch.object(m, "save_state") as save:
+            m.runtime_provision(cid, "agent-server-conversation-00000000-0000-4000-8000-000000000001", conv, state)
+            api.assert_not_called()
+            remote.assert_not_called()
+            creds.assert_not_called()
+            db.assert_not_called()
+            pg.assert_not_called()
+            cmd.assert_not_called()
+            save.assert_not_called()
+
+    def test_tracked_runtime_wrong_conversation_fails_closed(self):
+        cid = "a" * 64
+        state = {"runtime:" + cid: {
+            "role": m.ident(cid), "credential_file": cid + ".env",
+            "conversation": "00000000-0000-4000-8000-000000000002",
+            "created_at": 100, "absent_since": None}}
+        with patch.object(m, "remote_present") as remote, patch.object(
+            m, "pg"
+        ) as pg:
+            with self.assertRaisesRegex(RuntimeError, "runtime state mismatch"):
+                m.runtime_provision(cid, "agent-server-conversation-test",
+                                    "00000000-0000-4000-8000-000000000001", state)
+            remote.assert_not_called()
+            pg.assert_not_called()
+
+    def test_reappearing_runtime_is_not_silently_skipped(self):
+        cid = "a" * 64
+        conv = "00000000-0000-4000-8000-000000000001"
+        state = {"runtime:" + cid: {
+            "role": m.ident(cid), "credential_file": cid + ".env",
+            "conversation": conv, "created_at": 100, "absent_since": 200}}
+        with patch.object(m, "validated_conversation", side_effect=RuntimeError("API not ready")) as api, patch.object(
+            m, "db_status"
+        ) as db:
+            with self.assertRaisesRegex(RuntimeError, "API not ready"):
+                m.runtime_provision(cid, "agent-server-conversation-test", conv, state)
+            api.assert_called_once()
+            db.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
