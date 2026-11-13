@@ -93,3 +93,9 @@ The `openhands-postgres-events.service` watches Docker `container start` and `co
 A minimum **300-second** grace period separates first observed removal from deletion. Existing PostgreSQL connections, duplicate state references, invalid Docker state, and legacy records block removal. Cleanup remains opt-in via the reaper service. A Docker stop without removal is not a deletion event.
 
 After installation, verify `systemctl status openhands-postgres-events.service` and inspect its journal for `WATCH_EVENT` messages. **Do not manually remove active OpenHands containers** just to test this behavior. Use a disposable OpenHands conversation and its normal lifecycle.
+
+## Docker startup races and provisioning diagnostics
+
+Docker can emit a `start` event before the corresponding conversation becomes visible to the OpenHands API. The event watcher retries provisioning up to three times with three seconds between attempts; the separate one-minute provisioning timer still reconciles missed or delayed setups. No provisioning failure enables deletion.
+
+A safe `ERROR agent-server-conversation-...: OpenHands conversation API not ready (HTTP 404)` means the conversation is not yet available through the authenticated API. A later `READY_RUNTIME` is expected after it becomes ready. If provisioning repeatedly fails, run `openhands-postgres-manager provision` and inspect `journalctl -u openhands-postgres-events.service -n 50 --no-pager` and `journalctl -u openhands-postgres-provision.service -n 50 --no-pager`. Never print credentials or environment files.
