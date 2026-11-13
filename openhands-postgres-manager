@@ -294,12 +294,90 @@ def cleanup(state, apply=False):
             continue
         if db_status(role) != (True, True):
             raise RuntimeError("database ownership check failed")
+        # Migrated legacy records can still refer to this role. Fail closed.
+        aliases = [key for key, value in state.items()
+                   if key != cid and value.get("role") == role]
+        if aliases:
+            print("KEEP", conv, "role has legacy or duplicate state references")
+            continue
         pg(f"DROP DATABASE {role} WITH (FORCE);")
         pg(f"DROP ROLE {role};")
         credential_path(entry["credential_file"]).unlink(missing_ok=True)
         del state[cid]
         save_state(state)
         print("DELETED", conv, role)
+
+def managed_inventory(state):
+    """Read-only inventory; untracked databases are not deletion candidates."""
+    rows = pg(
+        "SELECT datname FROM pg_database "
+        "WHERE datname ~ '^oh_[0-9a-f]{12,16}
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["status", "provision", "cleanup", "audit"])
+    parser.add_argument("--apply", action="store_true", help="Apply cleanup after all safety checks")
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        raise RuntimeError("run as root on the OpenHands host")
+    checked_dir()
+    health = run(["docker", "inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{end}}", PG])
+    if health != "healthy":
+        raise RuntimeError("PostgreSQL is not healthy")
+    state = read_state()
+    if args.action == "status":
+        print("Managed databases:", len(state))
+        print("Running conversations:", len(containers()))
+    elif args.action == "audit":
+        audit(state)
+    elif args.action == "provision":
+        errors = 0
+        for cid,(name,conv) in containers().items():
+            try:
+                provision_one(cid,name,conv,state)
+            except Exception as exc:
+                # Errors are intentionally not rendered verbatim: SQL tool stderr could contain secrets.
+                print(f"ERROR {name}: {type(exc).__name__}", file=sys.stderr)
+                errors += 1
+        if errors:
+            raise RuntimeError(f"{errors} provisioning errors")
+    elif args.apply and os.getenv("OH_PG_ENABLE_DELETION") != "I_UNDERSTAND":
+        raise RuntimeError("deletion requires OH_PG_ENABLE_DELETION=I_UNDERSTAND")
+    else:
+        cleanup(state,args.apply)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"FAILED: {type(exc).__name__}: {str(exc)[:120]}", file=sys.stderr)
+        sys.exit(1)
+ ORDER BY datname;"
+    )
+    databases = set(rows.splitlines()) if rows else set()
+    references = {}
+    for key, entry in state.items():
+        role = entry.get("role")
+        if isinstance(role, str) and re.fullmatch(r"oh_[0-9a-f]{12,16}", role):
+            references.setdefault(role, []).append(key)
+    return databases, references
+
+
+def audit(state):
+    """Report orphan candidates without modifying databases or credentials."""
+    databases, references = managed_inventory(state)
+    active = {conv for _, conv in containers(True).values()}
+    for role in sorted(databases | references.keys()):
+        keys = references.get(role, [])
+        if not keys:
+            status = "UNTRACKED_KEEP"
+        elif any(k.startswith("conv:") for k in keys):
+            known = [k[5:] for k in keys if k.startswith("conv:")]
+            status = "ACTIVE_KEEP" if any(c in active for c in known) else "TRACKED_KEEP"
+        else:
+            status = "LEGACY_KEEP"
+        if role not in databases:
+            status = "MISSING_DB_REVIEW"
+        print(status, role, "records=" + str(len(keys)))
+    print("Audit is read-only; no database is eligible for deletion based on this report.")
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
