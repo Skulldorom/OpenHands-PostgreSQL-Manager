@@ -246,5 +246,95 @@ class ManagerTests(unittest.TestCase):
                 m.conversation_catalog("test-key")
 
 
+    def test_runtime_key_is_distinct_from_conversation(self):
+        cid = "a" * 64
+        self.assertEqual(m.runtime_record_key(cid), "runtime:" + cid)
+
+    def test_runtime_cleanup_preserves_stopped_container(self):
+        from unittest.mock import MagicMock
+        cid = "a" * 64
+        role = m.ident(cid)
+        state = {"runtime:" + cid: {
+            "role": role, "credential_file": cid + ".env",
+            "created_at": 100, "absent_since": None,
+        }}
+        with patch.object(m, "docker_snapshot", return_value={cid}), patch.object(
+            m, "pg"
+        ) as pg, patch.object(m, "save_state") as save:
+            m.runtime_cleanup(state, apply=True)
+            pg.assert_not_called()
+            save.assert_not_called()
+
+    def test_runtime_cleanup_starts_absence_clock(self):
+        cid = "a" * 64
+        state = {"runtime:" + cid: {
+            "role": m.ident(cid), "credential_file": cid + ".env",
+            "created_at": 100, "absent_since": None,
+        }}
+        with patch.object(m, "docker_snapshot", return_value=set()), patch.object(
+            m.time, "time", return_value=1000
+        ), patch.object(m, "save_state") as saved, patch.object(m, "pg") as pg:
+            m.runtime_cleanup(state, apply=True)
+            self.assertEqual(state["runtime:" + cid]["absent_since"], 1000)
+            saved.assert_called_once()
+            pg.assert_not_called()
+
+    def test_runtime_cleanup_grace_period_prevents_drop(self):
+        cid = "a" * 64
+        state = {"runtime:" + cid: {
+            "role": m.ident(cid), "credential_file": cid + ".env",
+            "created_at": 100, "absent_since": 999,
+        }}
+        with patch.object(m, "docker_snapshot", return_value=set()), patch.object(
+            m.time, "time", return_value=1000
+        ), patch.object(m, "pg") as pg:
+            m.runtime_cleanup(state, apply=True)
+            pg.assert_not_called()
+
+    def test_runtime_cleanup_protects_legacy_alias(self):
+        cid = "a" * 64
+        role = m.ident(cid)
+        state = {
+            "runtime:" + cid: {
+                "role": role, "credential_file": cid + ".env",
+                "created_at": 100, "absent_since": 1000,
+            },
+            cid: {"role": role, "conversation": "old-runtime"},
+        }
+        with patch.object(m, "docker_snapshot", return_value=set()), patch.object(
+            m.time, "time", return_value=10000
+        ), patch.object(m, "pg") as pg:
+            m.runtime_cleanup(state, apply=True)
+            pg.assert_not_called()
+
+    def test_runtime_cleanup_never_touches_old_persistent_record(self):
+        cid = "a" * 64
+        state = {"conv:00000000-0000-4000-8000-000000000001": {
+            "role": m.ident(cid), "credential_file": cid + ".env",
+        }}
+        with patch.object(m, "docker_snapshot", return_value=set()), patch.object(
+            m, "pg"
+        ) as pg:
+            m.runtime_cleanup(state, apply=True)
+            pg.assert_not_called()
+
+    def test_runtime_cleanup_docker_failure_aborts(self):
+        with patch.object(m, "docker_snapshot", side_effect=RuntimeError("offline")), patch.object(
+            m, "pg"
+        ) as pg:
+            with self.assertRaises(RuntimeError):
+                m.runtime_cleanup({}, apply=True)
+            pg.assert_not_called()
+
+    def test_runtime_provision_does_not_overwrite_existing_legacy_credentials(self):
+        cid = "a" * 64
+        with patch.object(m, "validated_conversation"), patch.object(
+            m, "remote_present", return_value=True
+        ), patch.object(m, "pg") as pg:
+            m.runtime_provision(cid, "agent-server-conversation-test",
+                                "00000000-0000-4000-8000-000000000001", {})
+            pg.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
