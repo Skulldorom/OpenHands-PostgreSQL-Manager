@@ -336,5 +336,21 @@ class ManagerTests(unittest.TestCase):
             pg.assert_not_called()
 
 
+    def test_audit_shows_runtime_record_without_deleting(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        cid = "a" * 64
+        role = m.ident(cid)
+        state = {"runtime:" + cid: {"role": role, "credential_file": cid + ".env"}}
+        with patch.object(m, "pg", return_value=role), patch.object(
+            m, "containers", return_value={}
+        ), patch.object(m, "docker_snapshot", return_value={cid}), redirect_stdout(StringIO()) as output:
+            m.audit(state)
+        self.assertIn("RUNTIME_KEEP " + role, output.getvalue())
+
+    def test_cleanup_grace_at_least_one_hour(self):
+        self.assertGreaterEqual(m.GRACE, 3600)
+
+
 if __name__ == "__main__":
     unittest.main()
