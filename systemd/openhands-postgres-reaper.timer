@@ -1,9 +1,9 @@
 [Unit]
-Description=Opt-in PostgreSQL cleanup for permanently deleted OpenHands conversations
+Description=Opt-in PostgreSQL cleanup for removed OpenHands runtime containers
 
 [Timer]
-OnBootSec=20min
-OnUnitInactiveSec=24h
+OnBootSec=5min
+OnUnitInactiveSec=15min
 AccuracySec=5min
 Unit=openhands-postgres-reaper.service
 
