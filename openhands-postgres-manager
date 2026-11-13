@@ -25,7 +25,7 @@ PORT = os.getenv("OH_PG_PORT", "55432")
 DEST = "/tmp/openhands-postgres.env"
 API = os.getenv("OH_PG_API", "http://127.0.0.1:18000/api/conversations/")
 KEY = Path(os.getenv("OH_PG_API_KEY_FILE", "/root/.openhands/agent-canvas/api-key.txt"))
-GRACE = max(3600, int(os.getenv("OH_PG_GRACE_SECONDS", "3600")))
+GRACE = max(300, int(os.getenv("OH_PG_GRACE_SECONDS", "300")))
 
 def run(argv, *, data=None, env=None):
     return subprocess.run(argv, input=data, text=True, capture_output=True,
@@ -547,13 +547,67 @@ def audit(state):
     print("Audit is read-only; no database is eligible for deletion based on this report.")
 
 
+
+def event_action(event):
+    """Map only OpenHands container lifecycle events to manager actions."""
+    if not isinstance(event, dict) or event.get("Type") != "container":
+        return None
+    name = event.get("Actor", {}).get("Attributes", {}).get("name")
+    if not isinstance(name, str) or not name.startswith(PREFIX):
+        return None
+    try:
+        uuid.UUID(name[len(PREFIX):])
+    except ValueError:
+        return None
+    return {"start": "provision", "destroy": "cleanup"}.get(event.get("Action"))
+
+
+def trigger_manager(action):
+    """Use the same lock as both timers; missed events are reconciled later."""
+    if action not in ("provision", "cleanup"):
+        raise ValueError("invalid lifecycle action")
+    argv = ["/usr/bin/flock", "-n", "/run/openhands-postgres-manager.lock",
+            "/usr/local/sbin/openhands-postgres-manager", action]
+    env = os.environ.copy()
+    if action == "cleanup":
+        argv.append("--apply")
+        env["OH_PG_ENABLE_DELETION"] = "I_UNDERSTAND"
+    result = subprocess.run(argv, env=env, timeout=150, check=False)
+    if result.returncode:
+        print("WATCH_ACTION_RETRY_BY_TIMER", action, "status", result.returncode,
+              flush=True)
+
+
+def watch_events():
+    """Long-running Docker event consumer, backed by both periodic timers."""
+    # Docker's event stream follows new events; the timers reconcile missed ones.
+    cmd = ["docker", "events", "--format", "{{json .}}",
+           "--filter", "type=container",
+           "--filter", "event=start", "--filter", "event=destroy"]
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, text=True, bufsize=1) as proc:
+        for line in proc.stdout:
+            try:
+                event = json.loads(line)
+                action = event_action(event)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if action:
+                print("WATCH_EVENT", action, flush=True)
+                trigger_manager(action)
+        raise RuntimeError("Docker event stream ended; systemd will restart watcher")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["status", "provision", "cleanup", "audit"])
+    parser.add_argument("action", choices=["status", "provision", "cleanup", "audit", "watch"])
     parser.add_argument("--apply", action="store_true", help="Apply cleanup after safety checks")
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError("run as root on the OpenHands host")
+    if args.action == "watch":
+        watch_events()
+        return
     checked_dir()
     health = run(["docker", "inspect", "-f",
                   "{{if .State.Health}}{{.State.Health.Status}}{{end}}", PG])
