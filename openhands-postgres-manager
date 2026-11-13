@@ -25,7 +25,7 @@ PORT = os.getenv("OH_PG_PORT", "55432")
 DEST = "/tmp/openhands-postgres.env"
 API = os.getenv("OH_PG_API", "http://127.0.0.1:18000/api/conversations/")
 KEY = Path(os.getenv("OH_PG_API_KEY_FILE", "/root/.openhands/agent-canvas/api-key.txt"))
-GRACE = int(os.getenv("OH_PG_GRACE_SECONDS", "86400"))
+GRACE = int(os.getenv("OH_PG_GRACE_SECONDS", "3600"))
 
 def run(argv, *, data=None, env=None):
     return subprocess.run(argv, input=data, text=True, capture_output=True,
@@ -231,6 +231,142 @@ def provision_one(cid, name, conv, state):
     save_state(state)
     print("READY", conv, role)
 
+
+def runtime_record_key(cid):
+    ident(cid)  # Validates Docker's immutable full container ID.
+    return "runtime:" + cid
+
+
+def runtime_provision(cid, name, conv, state):
+    """Each Docker runtime owns one disposable database, never its conversation."""
+    validated_conversation(conv)
+    key = runtime_record_key(cid)
+    if key in state:
+        entry = state[key]
+        if entry.get("role") != ident(cid) or entry.get("credential_file") != cid + ".env":
+            raise RuntimeError("runtime state mismatch")
+    else:
+        # An older persistent-conversation deployment may already have
+        # populated this exact container. Never replace its credentials.
+        if remote_present(name):
+            print("LEGACY_RUNTIME_KEEP", name, "existing credentials unchanged")
+            return
+        entry = {"role": ident(cid), "credential_file": cid + ".env",
+                 "conversation": conv, "created_at": int(time.time()),
+                 "absent_since": None}
+    role = ident(cid)
+    path, password = credentials(entry["credential_file"], role)
+    role_ok, db_ok = db_status(role)
+    if not role_ok and not db_ok:
+        pg(f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20;")
+        role_ok = True
+    if role_ok and not db_ok:
+        try:
+            check = run(["docker", "exec", "-e", "PGPASSWORD", PG, "psql", "-X",
+                         "-h", "127.0.0.1", "-p", "5432", "-U", role, "-d", "postgres",
+                         "-At", "-c", "SELECT current_user;"],
+                        env=dict(os.environ, PGPASSWORD=password))
+        except subprocess.CalledProcessError:
+            raise RuntimeError("role password not verified")
+        if check != role:
+            raise RuntimeError("role identity not verified")
+        pg(f"CREATE DATABASE {role} OWNER {role} CONNECTION LIMIT 20;")
+    elif not role_ok and db_ok:
+        raise RuntimeError("unexpected database ownership")
+    pg(f"REVOKE ALL ON DATABASE {role} FROM PUBLIC;")
+    authentication(role, password)
+    if remote_present(name):
+        digest = run(["docker", "exec", name, "sha256sum", DEST]).split()[0]
+        if digest != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise RuntimeError("runtime credentials differ; not overwriting")
+    else:
+        run(["docker", "cp", str(path), f"{name}:{DEST}"])
+    if run(["docker", "exec", name, "stat", "-c", "%a", DEST]) != "600":
+        raise RuntimeError("invalid runtime credential permissions")
+    entry["absent_since"] = None
+    state[key] = entry
+    save_state(state)
+    print("READY_RUNTIME", name, role)
+
+
+def docker_snapshot():
+    """Require the daemon to be reachable before trusting absent containers."""
+    run(["docker", "info", "--format", "{{.ID}}"])
+    # Validated Docker inspect/mount mapping is used for provisioning; cleanup
+    # only needs the full IDs of all running and stopped containers.
+    return set(run(["docker", "ps", "-a", "--no-trunc",
+                    "--format", "{{.ID}}"]).splitlines())
+
+
+def runtime_cleanup(state, apply=False):
+    """Cleanup only manager-created runtime records, never older state."""
+    present = docker_snapshot()
+    now = int(time.time())
+    dropped = 0
+    for key, entry in list(state.items()):
+        if not key.startswith("runtime:"):
+            continue
+        cid = key[len("runtime:"):]
+        role = ident(cid)
+        if entry.get("role") != role or entry.get("credential_file") != cid + ".env":
+            raise RuntimeError("runtime cleanup identity mismatch")
+        if cid in present:
+            if entry.get("absent_since") is not None and apply:
+                entry["absent_since"] = None
+                save_state(state)
+            print("KEEP_RUNTIME", cid[:12], role)
+            continue
+        if entry.get("absent_since") is None:
+            print("ABSENT_FIRST_SEEN", cid[:12], role)
+            if apply:
+                entry["absent_since"] = now
+                save_state(state)
+            continue
+        since = entry["absent_since"]
+        if type(since) is not int or since > now or since < entry["created_at"]:
+            raise RuntimeError("invalid absence timestamp")
+        if now - since < GRACE:
+            print("RETAIN_GRACE", cid[:12], role)
+            continue
+        # Existing persistent-conversation or legacy references are protected.
+        if any(other_key != key and item.get("role") == role
+               for other_key, item in state.items()):
+            print("KEEP_ALIASED", cid[:12], role)
+            continue
+        if not apply:
+            print("WOULD_DELETE_RUNTIME", cid[:12], role)
+            continue
+        if dropped >= 1:
+            print("KEEP_RATE_LIMIT", cid[:12], role)
+            continue
+        if cid in docker_snapshot():
+            print("KEEP_REAPPEARED", cid[:12], role)
+            continue
+        if db_status(role) != (True, True):
+            raise RuntimeError("unverified database ownership")
+        path = credential_path(entry["credential_file"])
+        if not path.is_file() or path.is_symlink() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+            raise RuntimeError("unsafe or missing tracked credentials")
+        # Do not automatically drop a runtime whose database is still in use.
+        sessions = pg(
+            f"SELECT count(*) FROM pg_stat_activity WHERE datname={sq(role)} "
+            "AND pid <> pg_backend_pid();"
+        )
+        if sessions != "0":
+            print("KEEP_CONNECTED", cid[:12], role)
+            continue
+        if cid in docker_snapshot():
+            print("KEEP_REAPPEARED", cid[:12], role)
+            continue
+        pg(f"DROP DATABASE {role};")
+        pg(f"DROP ROLE {role};")
+        path.unlink()
+        del state[key]
+        save_state(state)
+        dropped += 1
+        print("DELETED_RUNTIME", cid[:12], role)
+
+
 def api_status(conv, secret):
     req = urllib.request.Request(API.rstrip("/") + "/" + conv,
                                  headers={"X-Session-API-Key": secret})
@@ -428,7 +564,7 @@ def main():
         errors = 0
         for cid, (name, conv) in containers().items():
             try:
-                provision_one(cid, name, conv, state)
+                runtime_provision(cid, name, conv, state)
             except Exception as exc:
                 print(f"ERROR {name}: {type(exc).__name__}", file=sys.stderr)
                 errors += 1
@@ -437,7 +573,7 @@ def main():
     elif args.apply and os.getenv("OH_PG_ENABLE_DELETION") != "I_UNDERSTAND":
         raise RuntimeError("deletion requires OH_PG_ENABLE_DELETION=I_UNDERSTAND")
     else:
-        cleanup(state, args.apply)
+        runtime_cleanup(state, args.apply)
 
 
 if __name__ == "__main__":
