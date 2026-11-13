@@ -1,0 +1,11 @@
+[Unit]
+Description=Provision OpenHands databases periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=openhands-postgres-provision.service
+
+[Install]
+WantedBy=timers.target

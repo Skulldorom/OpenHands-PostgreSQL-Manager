@@ -1,0 +1,11 @@
+[Unit]
+Description=Dry-run OpenHands PostgreSQL cleanup daily
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=24h
+AccuracySec=5min
+Unit=openhands-postgres-cleanup.service
+
+[Install]
+WantedBy=timers.target

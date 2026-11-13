@@ -1,0 +1,9 @@
+[Unit]
+Description=Provision OpenHands isolated PostgreSQL databases
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/openhands-postgres-manager.lock /usr/local/sbin/openhands-postgres-manager provision
+TimeoutStartSec=120

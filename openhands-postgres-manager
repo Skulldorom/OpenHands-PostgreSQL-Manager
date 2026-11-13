@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""OpenHands PostgreSQL Manager. Host-side only; no Docker access in agents."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+BASE = Path(os.getenv("OH_PG_BASE", "/opt/openhands-postgres"))
+STATE = BASE / "managed.json"
+PG = os.getenv("OH_PG_CONTAINER", "openhands-postgres")
+PREFIX = "agent-server-conversation-"
+HOST = os.getenv("OH_PG_HOST", "172.17.0.1")
+PORT = os.getenv("OH_PG_PORT", "55432")
+DEST = "/tmp/openhands-postgres.env"
+API = os.getenv("OH_PG_API", "http://127.0.0.1:18000/conversations/")
+KEY = Path(os.getenv("OH_PG_API_KEY_FILE", "/root/.openhands/agent-canvas/api-key.txt"))
+GRACE = int(os.getenv("OH_PG_GRACE_SECONDS", "86400"))
+
+def run(argv, *, data=None, env=None):
+    return subprocess.run(argv, input=data, text=True, capture_output=True,
+                          check=True, env=env).stdout.strip()
+
+def pg(sql):
+    return run(["docker", "exec", "-i", PG, "psql", "-X", "-U", "postgres",
+                "-d", "postgres", "-At", "-v", "ON_ERROR_STOP=1"], data=sql)
+
+def ident(cid):
+    if re.fullmatch(r"[0-9a-f]{64}", cid) is None:
+        raise ValueError("invalid container ID")
+    return "oh_" + hashlib.sha256(cid.encode()).hexdigest()[:16]
+
+def sq(value):
+    if not re.fullmatch(r"[a-z0-9_]{1,63}", value):
+        raise ValueError("invalid SQL identifier")
+    return "'" + value + "'"
+
+def checked_dir():
+    if not BASE.is_dir() or BASE.is_symlink() or stat.S_IMODE(BASE.stat().st_mode) != 0o700:
+        raise RuntimeError("credentials directory must be a real 0700 directory")
+
+def read_state():
+    if not STATE.exists():
+        return {}
+    if STATE.is_symlink() or stat.S_IMODE(STATE.stat().st_mode) != 0o600:
+        raise RuntimeError("unsafe state file")
+    obj = json.loads(STATE.read_text())
+    if not isinstance(obj, dict):
+        raise RuntimeError("invalid state file")
+    return obj
+
+def save_state(obj):
+    tmp = BASE / ("managed." + secrets.token_hex(8) + ".tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, sort_keys=True, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, STATE)
+        dirfd = os.open(BASE, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+def containers(all_containers=False):
+    args = ["docker", "ps"]
+    if all_containers:
+        args.append("-a")
+    args += ["--format", "{{.Names}}"]
+    found = {}
+    for name in run(args).splitlines():
+        if not name.startswith(PREFIX):
+            continue
+        try:
+            conversation = str(uuid.UUID(name[len(PREFIX):]))
+        except ValueError:
+            continue
+        cid = run(["docker", "inspect", "-f", "{{.Id}}", name])
+        if re.fullmatch(r"[0-9a-f]{64}", cid):
+            found[cid] = (name, conversation)
+    return found
+
+def db_status(role):
+    r = pg(f"SELECT count(*) FROM pg_roles WHERE rolname={sq(role)} AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication;")
+    d = pg(f"SELECT count(*) FROM pg_database d JOIN pg_roles r ON d.datdba=r.oid WHERE d.datname={sq(role)} AND r.rolname={sq(role)};")
+    return r == "1", d == "1"
+
+def credential_path(cid):
+    return BASE / (cid + ".env")
+
+def credentials(cid, role):
+    path = credential_path(cid)
+    if path.is_symlink():
+        raise RuntimeError("credential symlink")
+    if path.exists():
+        if not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+            raise RuntimeError("credential mode not 0600")
+        config = dict(line.split("=", 1) for line in path.read_text().splitlines())
+        expected = {"PGHOST": HOST, "PGPORT": PORT, "PGDATABASE": role, "PGUSER": role}
+        if any(config.get(k) != v for k,v in expected.items()) or not re.fullmatch(r"[0-9a-f]{64}", config.get("PGPASSWORD", "")):
+            raise RuntimeError("invalid existing credentials")
+        return path, config["PGPASSWORD"]
+    password = secrets.token_hex(32)
+    data = f"PGHOST={HOST}\nPGPORT={PORT}\nPGDATABASE={role}\nPGUSER={role}\nPGPASSWORD={password}\n"
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    return path, password
+
+def authentication(role, password):
+    # Pass password through subprocess environment, never through logs or command arguments.
+    env = dict(os.environ, PGPASSWORD=password)
+    result = run(["docker", "exec", "-e", "PGPASSWORD", PG, "psql", "-X",
+                  "-h", "127.0.0.1", "-p", "5432", "-U", role, "-d", role,
+                  "-At", "-v", "ON_ERROR_STOP=1",
+                  "-c", "SELECT current_database(),current_user;"], env=env)
+    if result != role + "|" + role:
+        raise RuntimeError("database identity mismatch")
+
+def remote_present(name):
+    result = subprocess.run(["docker", "exec", name, "test", "-e", DEST],
+                            capture_output=True)
+    if result.returncode not in (0, 1):
+        raise RuntimeError("could not inspect agent credentials")
+    return result.returncode == 0
+
+def provision_one(cid, name, conv, state):
+    role = ident(cid)
+    path, password = credentials(cid, role)
+    role_ok, db_ok = db_status(role)
+    if not role_ok and not db_ok:
+        pg(f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20;")
+        role_ok = True
+    if role_ok and not db_ok:
+        # Only resume an interrupted creation if this manager already recorded the identity,
+        # or it has just created the role in this execution. Never reset an unknown password.
+        authentication_possible = True
+        try:
+            # No database yet; verify role password against maintenance DB instead.
+            test = run(["docker", "exec", "-e", "PGPASSWORD", PG, "psql", "-X",
+                        "-h", "127.0.0.1", "-p", "5432", "-U", role, "-d", "postgres",
+                        "-At", "-c", "SELECT current_user;"],
+                       env=dict(os.environ, PGPASSWORD=password))
+            authentication_possible = test == role
+        except subprocess.CalledProcessError:
+            authentication_possible = False
+        if not authentication_possible:
+            raise RuntimeError("orphan role with mismatched password; manual recovery required")
+        pg(f"CREATE DATABASE {role} OWNER {role} CONNECTION LIMIT 20;")
+    elif not role_ok and db_ok:
+        raise RuntimeError("unexpected database without restricted owner")
+    pg(f"REVOKE ALL ON DATABASE {role} FROM PUBLIC;")
+    authentication(role, password)
+    if remote_present(name):
+        remote = run(["docker", "exec", name, "sha256sum", DEST]).split()[0]
+        if remote != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise RuntimeError("remote credentials differ; refusing overwrite")
+    else:
+        run(["docker", "cp", str(path), f"{name}:{DEST}"])
+    if run(["docker", "exec", name, "stat", "-c", "%a", DEST]) != "600":
+        raise RuntimeError("agent credentials not mode 0600")
+    state[cid] = {"conversation": conv, "role": role,
+                  "created_at": state.get(cid, {}).get("created_at", int(time.time())),
+                  "absent_since": None}
+    save_state(state)
+    print("READY", conv, role)
+
+def api_status(conv, secret):
+    req = urllib.request.Request(API.rstrip("/") + "/" + conv,
+                                 headers={"X-Session-API-Key": secret})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 404):
+            return exc.code
+        raise RuntimeError("unexpected API status")
+
+def cleanup(state, apply=False):
+    active = containers()
+    if not active:
+        print("SKIP cleanup: no running conversation for positive API control")
+        return
+    if not KEY.is_file():
+        print("SKIP cleanup: no authenticated API key configured")
+        return
+    secret = KEY.read_text().strip()
+    if not secret or not any(api_status(conv, secret) == 200 for _,conv in active.values()):
+        print("SKIP cleanup: no valid positive API control")
+        return
+    all_conversations = {conv for _,conv in containers(True).values()}
+    now = int(time.time())
+    for cid, entry in list(state.items()):
+        conv = entry["conversation"]
+        if conv in all_conversations:
+            if entry.get("absent_since") is not None and apply:
+                entry["absent_since"] = None
+                save_state(state)
+            continue
+        status = api_status(conv, secret)
+        if status != 404:
+            if entry.get("absent_since") is not None and apply:
+                entry["absent_since"] = None
+                save_state(state)
+            print("KEEP", conv, "API", status)
+            continue
+        if entry.get("absent_since") is None:
+            print("KEEP", conv, "first confirmed API 404")
+            if apply:
+                entry["absent_since"] = now
+                save_state(state)
+            continue
+        if now - entry["absent_since"] < GRACE:
+            print("KEEP", conv, "grace period")
+            continue
+        role = ident(cid)
+        if entry["role"] != role:
+            raise RuntimeError("state identity mismatch")
+        if not apply:
+            print("WOULD_DELETE", conv, role)
+            continue
+        if conv in {c for _,c in containers(True).values()} or api_status(conv, secret) != 404:
+            print("KEEP", conv, "changed during final check")
+            continue
+        if db_status(role) != (True, True):
+            raise RuntimeError("database ownership check failed")
+        pg(f"DROP DATABASE {role} WITH (FORCE);")
+        pg(f"DROP ROLE {role};")
+        credential_path(cid).unlink(missing_ok=True)
+        del state[cid]
+        save_state(state)
+        print("DELETED", conv, role)
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["status", "provision", "cleanup"])
+    parser.add_argument("--apply", action="store_true", help="Apply cleanup after all safety checks")
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        raise RuntimeError("run as root on the OpenHands host")
+    checked_dir()
+    health = run(["docker", "inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{end}}", PG])
+    if health != "healthy":
+        raise RuntimeError("PostgreSQL is not healthy")
+    state = read_state()
+    if args.action == "status":
+        print("Managed databases:", len(state))
+        print("Running conversations:", len(containers()))
+    elif args.action == "provision":
+        errors = 0
+        for cid,(name,conv) in containers().items():
+            try:
+                provision_one(cid,name,conv,state)
+            except Exception as exc:
+                # Errors are intentionally not rendered verbatim: SQL tool stderr could contain secrets.
+                print(f"ERROR {name}: {type(exc).__name__}", file=sys.stderr)
+                errors += 1
+        if errors:
+            raise RuntimeError(f"{errors} provisioning errors")
+    elif args.apply and os.getenv("OH_PG_ENABLE_DELETION") != "I_UNDERSTAND":
+        raise RuntimeError("deletion requires OH_PG_ENABLE_DELETION=I_UNDERSTAND")
+    else:
+        cleanup(state,args.apply)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"FAILED: {type(exc).__name__}: {str(exc)[:120]}", file=sys.stderr)
+        sys.exit(1)
