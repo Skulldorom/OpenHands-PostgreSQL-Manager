@@ -9,7 +9,7 @@ Disposable PostgreSQL test databases for self-hosted OpenHands Agent Canvas conv
 3. Agent runtime receives `/tmp/openhands-postgres.env` (mode 0600).
 4. While the Docker container exists — including when stopped — its database is retained.
 5. Once Docker no longer lists that container, the manager records the first observed absence.
-6. After at least **one hour** of continuous confirmed absence, the opt-in reaper may remove the database, login, and host-side credentials.
+6. After at least **five minutes** of continuous confirmed absence, the opt-in reaper may remove the database, login, and host-side credentials.
 7. If an OpenHands conversation resumes in a **new** Docker container, it receives a **new empty database**.
 
 The shared `openhands-postgres` PostgreSQL 17 server and Docker volume are never destroyed by the manager.
@@ -20,7 +20,7 @@ The shared `openhands-postgres` PostgreSQL 17 server and Docker volume are never
 - Already-running containers with old PostgreSQL credentials are not overwritten.
 - Missing Docker, failing state checks, mismatched role or password, database ownership uncertainty, existing PostgreSQL sessions, or duplicate state references blocks deletion.
 - A stopped-but-existing Docker container is retained.
-- Every deletion requires repeated Docker inspection and at least 3,600 seconds after first observed disappearance.
+- Every deletion requires repeated Docker inspection and at least 300 seconds after first observed disappearance.
 - The reaper deletes at most **one** database each run, and never automatically deletes untracked databases.
 - The installer does not enable any systemd timers. The destructive reaper is separately opt-in.
 
@@ -41,12 +41,13 @@ openhands-postgres-manager provision
 openhands-postgres-manager cleanup
 ```
 
-After a disposable-runtime creation and removal test, explicitly enable the deletion reaper:
+After a disposable-runtime creation and removal test, enable the event watcher and fallback deletion timer:
 
 ```bash
+systemctl enable --now openhands-postgres-events.service
 systemctl enable --now openhands-postgres-reaper.timer
 ```
 
-Provisioning continues via the existing `openhands-postgres-provision.timer` (every minute). The reaper checks every 15 minutes; the grace interval is at least one hour from first observation of absence.
+The event watcher reacts immediately to Docker `start` and `destroy` events. The existing provisioning timer runs every minute, and the reaper reconciles every 15 minutes. Deletion requires at least five minutes after the first observed Docker disappearance (longer if the watcher or timer misses it).
 
 Read [Operations](docs/OPERATIONS.md) for safe rollout and validation. See [Security](docs/SECURITY.md). MIT licensed.
