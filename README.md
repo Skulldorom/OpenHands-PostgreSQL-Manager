@@ -1,7 +1,7 @@
 # OpenHands PostgreSQL Manager
 
 [![CI](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/releases)
+[![Version](https://img.shields.io/github/v/release/Skulldorom/OpenHands-PostgreSQL-Manager)](https://github.com/Skulldorom/OpenHands-PostgreSQL-Manager/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/skulldorom)
 
@@ -74,16 +74,20 @@ python3 openhands-postgres-manager --version
 
 The executable's `__version__` is the runtime version source, also copied by the installer. `--version` works without root, Docker, or access to credentials.
 
-Use semantic versioning: patch for fixes, minor for compatible features, major for breaking changes. Before a release, update `__version__`, the README version badge, and [CHANGELOG.md](CHANGELOG.md) in a reviewed PR. After merging, tag that commit and push the tag:
+Merging a PR into `main` triggers CI; a successful push CI run then creates a release automatically. No manual version edits or tags are needed.
 
-```bash
-git switch main
-git pull --ff-only
-git tag v0.1.0
-git push origin v0.1.0
-```
+| PR label | Release |
+| --- | --- |
+| None, or `release:patch` | Patch (default) |
+| `release:minor` | Minor |
+| `release:major` | Major |
+| `release:none` | Skip this PR |
 
-Replace `v0.1.0` with the version being released. The release workflow runs the full CI matrix and verifies the tag matches `--version` before publishing GitHub release notes. A release does not update an installed host; installation remains explicit.
+Use only one release label per PR; conflicting labels stop the release. The first release starts from `0.0.0`, so this PR's `release:major` produces **1.0.0**. The executable remains a development baseline until the release workflow updates it.
+
+The workflow reconciles merged PRs since the previous version tag. If several merges accumulate, it makes one release using the highest requested bump; skipped PRs do not influence the bump. It updates the executable version and changelog, reruns tests, atomically pushes the release commit and tag, and publishes GitHub release notes. Stale CI runs defer to the next successful main run; retries after a completed push reuse the existing tag. The README version badge follows published releases automatically.
+
+The workflow needs permission to push release commits to `main`; branch rules that prohibit GitHub Actions pushes must permit this automation. Release commits made with `GITHUB_TOKEN` do not trigger another push CI/release cycle. Direct pushes without merged PRs do not create releases. A release does not update an installed host; installation remains explicit.
 
 ## Support
 

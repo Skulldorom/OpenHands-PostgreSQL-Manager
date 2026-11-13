@@ -1,47 +1,35 @@
 name: Release
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-main
   cancel-in-progress: false
 jobs:
-  tests:
-    uses: ./.github/workflows/ci.yml
   release:
-    needs: tests
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Validate tag and version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          python - <<'PY'
-          import os
-          import re
-          import subprocess
-          import sys
-          tag = os.environ["RELEASE_TAG"]
-          output = subprocess.check_output(
-              [sys.executable, "openhands-postgres-manager", "--version"], text=True
-          ).strip()
-          version = output.split()[-1]
-          if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
-              raise SystemExit("Version must be a stable semantic version")
-          if tag != f"v{version}":
-              raise SystemExit("Release tag must match the executable version")
-          PY
-      - name: Publish GitHub release
+      - name: Release merged pull requests
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: python scripts/release.py
