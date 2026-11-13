@@ -74,3 +74,35 @@ bash scripts/install.sh
 openhands-postgres-manager status
 openhands-postgres-manager cleanup
 ```
+
+## Persistent conversation identity (OpenHands 1.62.0)
+
+The Docker container name contains a temporary runtime UUID. It is **not** a persistent conversation ID. Starting with the persistent-identity manager, the provisioner reads the verified container bind mount:
+
+```
+/var/openhands/conversations/<32-hex-character-conversation-id>
+```
+
+The source basename must agree with the destination basename, and the corresponding hyphenated conversation UUID must return HTTP 200 from the authenticated `GET /api/conversations/{conversation_id}` endpoint. Ambiguous or missing mounts fail closed; the manager does not provision an unverified runtime.
+
+The manager stores credentials by persistent conversation ID. When OpenHands resumes a conversation in a new runtime, it reuses the same PostgreSQL database and password and securely copies the credentials into the new container.
+
+### Legacy records
+
+Old `managed.json` records keyed by 64-character Docker container IDs are deliberately **not** cleanup candidates. If the exact old container is still running and the verified mount identifies its persistent conversation, the existing database and credential file can be adopted. Otherwise the orphan is preserved for manual review and a new runtime gets a new conversation-scoped database. Do not delete legacy records or rotate their passwords automatically.
+
+### Safe update
+
+```bash
+cd ~/OpenHands-PostgreSQL-Manager
+git pull --ff-only
+python3 -m unittest discover -s tests -v
+bash scripts/install.sh
+openhands-postgres-manager status
+openhands-postgres-manager provision
+openhands-postgres-manager cleanup
+```
+
+Provisioning may output no `READY` lines if no conversation containers are currently running. That is normal. Start a new conversation to validate provisioning, suspend it, resume it, and confirm its role and database are unchanged.
+
+**Cleanup remains read-only by default and automatic deletion remains disabled.** Confirm the system's API semantics and full recovery behavior before enabling destructive deletion. There is no guarantee that an observed API 404 is permanent during every lifecycle race.
