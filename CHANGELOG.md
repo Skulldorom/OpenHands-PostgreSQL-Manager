@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0
+
+Merged pull requests: #1.
+
 ## Unreleased
 
 Initial development baseline of the existing manager, with test automation and release tooling.

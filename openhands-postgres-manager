@@ -16,7 +16,7 @@ import urllib.request
 import urllib.parse
 import uuid
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 BASE = Path(os.getenv("OH_PG_BASE", "/opt/openhands-postgres"))
 STATE = BASE / "managed.json"
