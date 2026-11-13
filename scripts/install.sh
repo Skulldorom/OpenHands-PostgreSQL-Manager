@@ -2,6 +2,12 @@
 set -euo pipefail
 [[ $(id -u) -eq 0 ]] || { echo "Run as root on OpenHands LXC" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Check everything before replacing the installed executable.
+python3 -m py_compile "$ROOT/openhands-postgres-manager"
+(
+  cd "$ROOT"
+  python3 -m unittest discover -s tests -q
+)
 install -d -m 700 /opt/openhands-postgres
 install -m 700 "$ROOT/openhands-postgres-manager" /usr/local/sbin/openhands-postgres-manager
 for file in "$ROOT"/systemd/*; do
