@@ -57,6 +57,44 @@ class ManagerTests(unittest.TestCase):
                 m.cleanup({"a"*64: {"conversation": "00000000-0000-4000-8000-000000000001", "role": m.ident("a"*64)}}, apply=True)
                 sql.assert_not_called()
 
+    def test_persistent_id_from_realistic_mount(self):
+        persistent = "dfab8fcd-8e88-47cc-8a9f-2f5199e13322"
+        info = {"Mounts": [
+            {"Destination": "/workspace", "Source": "/root/workspace/project/dfab8fcd8e8847cc8a9f2f5199e13322"},
+            {"Destination": "/var/openhands/conversations/dfab8fcd8e8847cc8a9f2f5199e13322",
+             "Source": "/root/.openhands/agent-canvas/dev_conversations/dfab8fcd8e8847cc8a9f2f5199e13322"},
+        ]}
+        self.assertEqual(m.persistent_id_from_inspect(info), persistent)
+
+    def test_mount_mapping_fails_closed(self):
+        with self.assertRaises(RuntimeError):
+            m.persistent_id_from_inspect({"Mounts": []})
+        with self.assertRaises(RuntimeError):
+            m.persistent_id_from_inspect({"Mounts": [{
+                "Destination": "/var/openhands/conversations/dfab8fcd8e8847cc8a9f2f5199e13322",
+                "Source": "/tmp/different",
+            }]})
+
+    def test_new_conversation_role_survives_container_recreation(self):
+        conv = "dfab8fcd-8e88-47cc-8a9f-2f5199e13322"
+        first, entry = m.record_for_conversation({}, conv, "a" * 64)
+        second, after_resume = m.record_for_conversation({first: entry}, conv, "b" * 64)
+        self.assertEqual(first, second)
+        self.assertEqual(entry, after_resume)
+        self.assertTrue(entry["credential_file"].startswith("conversation-"))
+
+    def test_legacy_record_only_adopted_for_exact_current_runtime(self):
+        conv = "dfab8fcd-8e88-47cc-8a9f-2f5199e13322"
+        cid = "a" * 64
+        old = {cid: {"conversation": "71ca7b40-c64e-48dd-b3b0-3fe0b3be33fa",
+                     "role": m.ident(cid), "created_at": 123}}
+        key, entry = m.record_for_conversation(old, conv, cid)
+        self.assertEqual(key, "conv:" + conv)
+        self.assertEqual(entry["role"], m.ident(cid))
+        self.assertEqual(entry["credential_file"], cid + ".env")
+        other_key, other_entry = m.record_for_conversation(old, conv, "b" * 64)
+        self.assertNotEqual(other_entry["role"], m.ident(cid))
+
     def test_cleanup_no_running_agent_never_deletes(self):
         with patch.object(m, "containers", return_value={}):
             with patch.object(m, "pg") as sql:
