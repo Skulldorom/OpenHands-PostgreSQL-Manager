@@ -48,6 +48,6 @@ systemctl enable --now openhands-postgres-events.service
 systemctl enable --now openhands-postgres-reaper.timer
 ```
 
-The event watcher reacts immediately to Docker `start` and `destroy` events. The existing provisioning timer runs every minute, and the reaper reconciles every 15 minutes. Deletion requires at least five minutes after the first observed Docker disappearance (longer if the watcher or timer misses it).
+The event watcher reacts immediately to Docker `start` and `destroy` events. The existing provisioning timer runs every minute, and the reaper reconciles every five minutes. Deletion requires at least five minutes after the first observed Docker disappearance (longer if the watcher or timer misses it).
 
 Read [Operations](docs/OPERATIONS.md) for safe rollout and validation. See [Security](docs/SECURITY.md). MIT licensed.
