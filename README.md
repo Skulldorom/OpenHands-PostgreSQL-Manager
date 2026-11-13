@@ -10,14 +10,14 @@ OpenHands conversation containers can run with `CapDrop: ALL` and `no-new-privil
 
 ## Capabilities
 
-- Detects running `agent-server-conversation-<UUID>` containers
-- Creates an `oh_<hash>` database/role per runtime
+- Detects running `agent-server-conversation-<UUID>` containers and maps them to persistent conversation IDs through `/var/openhands/conversations/<conversation-id-without-hyphens>`
+- Creates an `oh_<hash>` database/role per **persistent conversation**, verified through its conversation bind mount and the authenticated OpenHands API
 - Stores credentials in a host directory (0700; files 0600)
 - Copies `/tmp/openhands-postgres.env` into the agent runtime without changing container privileges
-- Retries idempotently; preserves existing credentials and refuses unknown state
+- Retries idempotently, reuses credentials across runtime recreation, and refuses unknown state
 - Verifies authentication and database ownership
 - Provides systemd provisioning timer (one-minute polling)
-- Provides conservative deletion analysis with authenticated API checks and 24-hour grace
+- Provides conservative deletion analysis with authenticated API checks and 24-hour grace (no automatic destructive deletion)
 - Ships a non-destructive cleanup timer; **automatic destructive deletion is off**
 
 ## Quick start
@@ -43,7 +43,7 @@ Enable your existing `postgresql-integration-testing` OpenHands skill. It should
 
 Conversation containers can disappear when suspended; this is **not** proof of deletion. Cleanup checks an authenticated OpenHands conversation API, requires a live positive control, verifies no current or stopped runtime exists, and waits 24 hours after confirmed 404 before any eligible deletion. Due to unresolved API/lifecycle races, destructive cleanup remains opt-in and must be validated locally.
 
-**Warning:** Existing databases from the earlier experimental provisioner are not automatically adopted or deleted.
+**Legacy migration:** Existing tracked runtime-based databases are adopted only while the exact previously provisioned container is still present and its persistent conversation mount plus API identity can be verified. Otherwise, the old database and credentials remain untouched and a resumed conversation receives a newly scoped database. This prevents unsafe guessing. Legacy state is never a deletion candidate.
 
 Read [Security](docs/SECURITY.md) and [Operations](docs/OPERATIONS.md).
 
