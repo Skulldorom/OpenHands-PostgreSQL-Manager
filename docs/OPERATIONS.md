@@ -115,13 +115,13 @@ Run the inventory command after a deployment, suspend/resume test, or before any
 openhands-postgres-manager audit
 ```
 
-The inventory compares PostgreSQL's \`oh_\`-prefixed databases against the manager's state. Categories:
+The inventory compares PostgreSQL's `oh_`-prefixed databases against the manager's state. Categories:
 
-- \`ACTIVE_KEEP\`: referenced by a persistent conversation with a Docker runtime currently present
-- \`TRACKED_KEEP\`: referenced by a persistent conversation with no current runtime; suspension is expected
-- \`LEGACY_KEEP\`: referenced only by a legacy runtime-keyed state record; not automatically deleted
-- \`UNTRACKED_KEEP\`: database exists but no manager record references it; may be an earlier manual test
-- \`MISSING_DB_REVIEW\`: state references a database not found in PostgreSQL; investigate manually
+- `ACTIVE_KEEP`: referenced by a persistent conversation with a Docker runtime currently present
+- `TRACKED_KEEP`: referenced by a persistent conversation with no current runtime; suspension is expected
+- `LEGACY_KEEP`: referenced only by a legacy runtime-keyed state record; not automatically deleted
+- `UNTRACKED_KEEP`: database exists but no manager record references it; may be an earlier manual test
+- `MISSING_DB_REVIEW`: state references a database not found in PostgreSQL; investigate manually
 
 The command is **strictly read-only** and never purges orphaned resources, rotates passwords, or modifies the manager's state. It intentionally does not claim that any database is safe to delete. The manager also refuses destructive cleanup when a role has more than one state reference, such as an adopted legacy record.
 
