@@ -106,3 +106,23 @@ openhands-postgres-manager cleanup
 Provisioning may output no `READY` lines if no conversation containers are currently running. That is normal. Start a new conversation to validate provisioning, suspend it, resume it, and confirm its role and database are unchanged.
 
 **Cleanup remains read-only by default and automatic deletion remains disabled.** Confirm the system's API semantics and full recovery behavior before enabling destructive deletion. There is no guarantee that an observed API 404 is permanent during every lifecycle race.
+
+## Read-only database reconciliation
+
+Run the inventory command after a deployment, suspend/resume test, or before any cleanup decision:
+
+```bash
+openhands-postgres-manager audit
+```
+
+The inventory compares PostgreSQL's \`oh_\`-prefixed databases against the manager's state. Categories:
+
+- \`ACTIVE_KEEP\`: referenced by a persistent conversation with a Docker runtime currently present
+- \`TRACKED_KEEP\`: referenced by a persistent conversation with no current runtime; suspension is expected
+- \`LEGACY_KEEP\`: referenced only by a legacy runtime-keyed state record; not automatically deleted
+- \`UNTRACKED_KEEP\`: database exists but no manager record references it; may be an earlier manual test
+- \`MISSING_DB_REVIEW\`: state references a database not found in PostgreSQL; investigate manually
+
+The command is **strictly read-only** and never purges orphaned resources, rotates passwords, or modifies the manager's state. It intentionally does not claim that any database is safe to delete. The manager also refuses destructive cleanup when a role has more than one state reference, such as an adopted legacy record.
+
+Automatic cleanup is not enabled in the installed systemd unit. Run the inventory first and retain old databases until ownership, actual API deletion semantics, and backup/recovery procedures are validated end-to-end.
