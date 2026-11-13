@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply verified OpenHands PostgreSQL deletion after retention
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=OH_PG_ENABLE_DELETION=I_UNDERSTAND
+ExecStart=/usr/bin/flock -n /run/openhands-postgres-manager.lock /usr/local/sbin/openhands-postgres-manager cleanup --apply
+TimeoutStartSec=180
