@@ -530,6 +530,11 @@ def audit(state):
         keys = references.get(role, [])
         if not keys:
             classification = "UNTRACKED_KEEP"
+        elif any(key.startswith("runtime:") for key in keys):
+            present = docker_snapshot()
+            ids = [key[len("runtime:"):] for key in keys if key.startswith("runtime:")]
+            classification = ("RUNTIME_KEEP" if any(cid in present for cid in ids)
+                              else "RUNTIME_ABSENT_REVIEW")
         elif any(key.startswith("conv:") for key in keys):
             conversations = [key[5:] for key in keys if key.startswith("conv:")]
             classification = ("ACTIVE_KEEP" if any(conv in active for conv in conversations)
