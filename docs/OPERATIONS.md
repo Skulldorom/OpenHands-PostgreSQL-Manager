@@ -56,7 +56,7 @@ systemctl status openhands-postgres-reaper.timer --no-pager
 journalctl -u openhands-postgres-reaper.service -n 40 --no-pager
 ```
 
-The first applied run marks absence. At least five minutes later, a subsequent applied run can remove **one** eligible runtime database. Docker events trigger immediate provisioning and absence observation; the timer checks about every 15 minutes as fallback. Do not speed up or bypass the five-minute grace for production testing.
+The first applied run marks absence. At least five minutes later, a subsequent applied run can remove **one** eligible runtime database. Docker events trigger immediate provisioning and absence observation; the timer checks about every five minutes as fallback. Do not speed up or bypass the five-minute grace for production testing.
 
 ## Emergency stop
 
@@ -88,7 +88,7 @@ Back up `/opt/openhands-postgres` with permissions intact and the `openhands-pos
 
 ## Event-driven coupling
 
-The `openhands-postgres-events.service` watches Docker `container start` and `container destroy` events for names matching `agent-server-conversation-<UUID>`. On start, it invokes the same locked provisioning command as the minute timer. On destroy, it immediately records first absence using the same guarded reaper logic. The reaper fallback runs every 15 minutes. The watcher automatically restarts when its Docker event stream ends.
+The `openhands-postgres-events.service` watches Docker `container start` and `container destroy` events for names matching `agent-server-conversation-<UUID>`. On start, it invokes the same locked provisioning command as the minute timer. On destroy, it immediately records first absence using the same guarded reaper logic. The reaper fallback runs every five minutes. The watcher automatically restarts when its Docker event stream ends.
 
 A minimum **300-second** grace period separates first observed removal from deletion. Existing PostgreSQL connections, duplicate state references, invalid Docker state, and legacy records block removal. Cleanup remains opt-in via the reaper service. A Docker stop without removal is not a deletion event.
 
