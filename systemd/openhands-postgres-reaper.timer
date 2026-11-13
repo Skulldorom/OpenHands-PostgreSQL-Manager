@@ -3,8 +3,8 @@ Description=Opt-in PostgreSQL cleanup for removed OpenHands runtime containers
 
 [Timer]
 OnBootSec=5min
-OnUnitInactiveSec=15min
-AccuracySec=5min
+OnUnitInactiveSec=5min
+AccuracySec=1min
 Unit=openhands-postgres-reaper.service
 
 [Install]
