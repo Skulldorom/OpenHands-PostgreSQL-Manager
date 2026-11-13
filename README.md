@@ -46,8 +46,9 @@ After a disposable-runtime creation and removal test, enable the event watcher a
 ```bash
 systemctl enable --now openhands-postgres-events.service
 systemctl enable --now openhands-postgres-reaper.timer
+systemctl enable --now openhands-postgres-provision.timer
 ```
 
-The event watcher reacts immediately to Docker `start` and `destroy` events. The existing provisioning timer runs every minute, and the reaper reconciles every five minutes. Deletion requires at least five minutes after the first observed Docker disappearance (longer if the watcher or timer misses it).
+The event watcher reacts immediately to Docker `start` and `destroy` events. The provisioning timer runs every minute to recover missed start events; **it skips already-provisioned runtimes without executing commands inside them or re-reading credentials**. The reaper reconciles every five minutes. Deletion requires at least five minutes after the first observed Docker disappearance (longer if the watcher or timer misses it).
 
 Read [Operations](docs/OPERATIONS.md) for safe rollout and validation. See [Security](docs/SECURITY.md). MIT licensed.
