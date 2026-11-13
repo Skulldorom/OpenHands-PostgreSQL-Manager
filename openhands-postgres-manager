@@ -22,7 +22,7 @@ PREFIX = "agent-server-conversation-"
 HOST = os.getenv("OH_PG_HOST", "172.17.0.1")
 PORT = os.getenv("OH_PG_PORT", "55432")
 DEST = "/tmp/openhands-postgres.env"
-API = os.getenv("OH_PG_API", "http://127.0.0.1:18000/conversations/")
+API = os.getenv("OH_PG_API", "http://127.0.0.1:18000/api/conversations/")
 KEY = Path(os.getenv("OH_PG_API_KEY_FILE", "/root/.openhands/agent-canvas/api-key.txt"))
 GRACE = int(os.getenv("OH_PG_GRACE_SECONDS", "86400"))
 
@@ -197,10 +197,13 @@ def cleanup(state, apply=False):
     if not active:
         print("SKIP cleanup: no running conversation for positive API control")
         return
-    if not KEY.is_file():
-        print("SKIP cleanup: no authenticated API key configured")
+    if not KEY.is_file() or KEY.is_symlink():
+        print("SKIP cleanup: no safe authenticated API key configured")
         return
     secret = KEY.read_text().strip()
+    # Require a verified 200 from the same authenticated API before trusting 404 as deletion.
+    # The Docker runtime UUID and persisted conversation UUID may not be identical;
+    # if they differ, cleanup safely stays disabled until mapping is implemented.
     if not secret or not any(api_status(conv, secret) == 200 for _,conv in active.values()):
         print("SKIP cleanup: no valid positive API control")
         return
