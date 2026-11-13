@@ -25,7 +25,7 @@ PORT = os.getenv("OH_PG_PORT", "55432")
 DEST = "/tmp/openhands-postgres.env"
 API = os.getenv("OH_PG_API", "http://127.0.0.1:18000/api/conversations/")
 KEY = Path(os.getenv("OH_PG_API_KEY_FILE", "/root/.openhands/agent-canvas/api-key.txt"))
-GRACE = int(os.getenv("OH_PG_GRACE_SECONDS", "3600"))
+GRACE = max(3600, int(os.getenv("OH_PG_GRACE_SECONDS", "3600")))
 
 def run(argv, *, data=None, env=None):
     return subprocess.run(argv, input=data, text=True, capture_output=True,
