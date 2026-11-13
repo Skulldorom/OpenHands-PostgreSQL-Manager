@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import uuid
 
 BASE = Path(os.getenv("OH_PG_BASE", "/opt/openhands-postgres"))
@@ -241,32 +242,76 @@ def api_status(conv, secret):
             return exc.code
         raise RuntimeError("unexpected API status")
 
+def conversation_catalog(secret):
+    """Retrieve the entire authenticated persistent-conversation catalog."""
+    if not secret:
+        raise RuntimeError("missing API credentials")
+    api_root = API.rstrip("/")
+    next_page = None
+    seen_pages = set()
+    conversations = set()
+    for _ in range(1000):
+        params = {"limit": "100"}
+        if next_page is not None:
+            if next_page in seen_pages:
+                raise RuntimeError("repeated conversation catalog cursor")
+            seen_pages.add(next_page)
+            params["page_id"] = next_page
+        url = api_root + "/search?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(
+            url, headers={"X-Session-API-Key": secret}
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            if response.status != 200:
+                raise RuntimeError("conversation catalog not authenticated")
+            data = json.load(response)
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise RuntimeError("invalid conversation catalog payload")
+        for item in data["items"]:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise RuntimeError("invalid conversation catalog record")
+            conv = item["id"]
+            if str(uuid.UUID(conv)) != conv:
+                raise RuntimeError("noncanonical conversation ID in catalog")
+            if conv in conversations:
+                raise RuntimeError("duplicate conversation across catalog pages")
+            conversations.add(conv)
+        next_page = data.get("next_page_id")
+        if next_page is None:
+            return conversations
+        if not isinstance(next_page, str) or not next_page:
+            raise RuntimeError("invalid conversation catalog cursor")
+    raise RuntimeError("conversation catalog exceeds safe pagination limit")
+
+
 def cleanup(state, apply=False):
-    active = containers()
-    if not active:
-        print("SKIP cleanup: no running conversation for positive API control")
-        return
     if not KEY.is_file() or KEY.is_symlink():
         print("SKIP cleanup: no safe authenticated API key configured")
         return
     secret = KEY.read_text().strip()
-    # Require a verified 200 from the same authenticated API before trusting 404 as deletion.
-    # The Docker runtime UUID and persisted conversation UUID may not be identical;
-    # if they differ, cleanup safely stays disabled until mapping is implemented.
-    if not secret or not any(api_status(conv, secret) == 200 for _,conv in active.values()):
-        print("SKIP cleanup: no valid positive API control")
+    if not secret:
+        print("SKIP cleanup: missing API credentials")
         return
-    all_conversations = {conv for _,conv in containers(True).values()}
+    # Authenticate and fully paginate the persistent catalog. A runtime is
+    # NOT required: OpenHands can suspend every container without deleting chats.
+    catalog = conversation_catalog(secret)
+    all_runtime_conversations = {conv for _, conv in containers(True).values()}
     now = int(time.time())
+    deleted_this_run = 0
     for cid, entry in list(state.items()):
         if not cid.startswith("conv:"):
-            continue  # Unknown legacy mappings are retained indefinitely.
-        conv = entry["conversation"]
-        if conv in all_conversations:
+            continue  # Never automatically delete legacy runtime-keyed state.
+        conv = entry.get("conversation")
+        if not isinstance(conv, str) or cid != "conv:" + conv:
+            raise RuntimeError("invalid persistent conversation state")
+        if conv in catalog or conv in all_runtime_conversations:
             if entry.get("absent_since") is not None and apply:
                 entry["absent_since"] = None
                 save_state(state)
+            print("KEEP", conv, "conversation present")
             continue
+        # A missing catalog item is not sufficient: require a second
+        # authenticated point lookup returning 404.
         status = api_status(conv, secret)
         if status != 404:
             if entry.get("absent_since") is not None and apply:
@@ -275,37 +320,53 @@ def cleanup(state, apply=False):
             print("KEEP", conv, "API", status)
             continue
         if entry.get("absent_since") is None:
-            print("KEEP", conv, "first confirmed API 404")
+            print("KEEP", conv, "first confirmed API absence")
             if apply:
                 entry["absent_since"] = now
                 save_state(state)
             continue
+        if not isinstance(entry["absent_since"], int) or entry["absent_since"] > now:
+            raise RuntimeError("invalid retention timestamp")
         if now - entry["absent_since"] < GRACE:
-            print("KEEP", conv, "grace period")
+            print("KEEP", conv, "24-hour safety period")
             continue
-        role = entry["role"]
-        if cid != "conv:" + conv or not re.fullmatch(r"oh_[0-9a-f]{16}", role):
-            raise RuntimeError("state identity mismatch")
+        role = entry.get("role")
+        if not isinstance(role, str) or not re.fullmatch(r"oh_[0-9a-f]{16}", role):
+            raise RuntimeError("invalid managed database role")
         if not apply:
             print("WOULD_DELETE", conv, role)
             continue
-        if conv in {c for _,c in containers(True).values()} or api_status(conv, secret) != 404:
+        # Conservative rate limit. Never bulk-drop all databases after a
+        # transient API/storage failure.
+        if deleted_this_run >= 1:
+            print("KEEP", conv, "deletion rate limit")
+            continue
+        # Second full catalog and Docker check immediately before deletion.
+        if conv in conversation_catalog(secret):
+            print("KEEP", conv, "conversation reappeared")
+            continue
+        if conv in {c for _, c in containers(True).values()} or api_status(conv, secret) != 404:
             print("KEEP", conv, "changed during final check")
             continue
         if db_status(role) != (True, True):
             raise RuntimeError("database ownership check failed")
-        # Migrated legacy records can still refer to this role. Fail closed.
+        # Migrated legacy records can still refer to this role.
         aliases = [key for key, value in state.items()
                    if key != cid and value.get("role") == role]
         if aliases:
             print("KEEP", conv, "role has legacy or duplicate state references")
             continue
+        path = credential_path(entry.get("credential_file", ""))
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError("tracked credentials missing or unsafe")
         pg(f"DROP DATABASE {role} WITH (FORCE);")
         pg(f"DROP ROLE {role};")
-        credential_path(entry["credential_file"]).unlink(missing_ok=True)
+        path.unlink()
         del state[cid]
         save_state(state)
+        deleted_this_run += 1
         print("DELETED", conv, role)
+
 
 def managed_inventory(state):
     """Read-only inventory; untracked databases are not deletion candidates."""
