@@ -95,6 +95,39 @@ class ManagerTests(unittest.TestCase):
         other_key, other_entry = m.record_for_conversation(old, conv, "b" * 64)
         self.assertNotEqual(other_entry["role"], m.ident(cid))
 
+    def test_inventory_classifies_legacy_and_untracked_without_deleting(self):
+        state = {
+            "a" * 64: {"role": "oh_aaaaaaaaaaaaaaaa", "conversation": "runtime"},
+            "conv:dfab8fcd-8e88-47cc-8a9f-2f5199e13322": {
+                "role": "oh_bbbbbbbbbbbbbbbb",
+                "conversation": "dfab8fcd-8e88-47cc-8a9f-2f5199e13322",
+            },
+        }
+        db_rows = "\n".join(["oh_aaaaaaaaaaaaaaaa",
+                             "oh_bbbbbbbbbbbbbbbb",
+                             "oh_cccccccccccccccc"])
+        from io import StringIO
+        from contextlib import redirect_stdout
+        with patch.object(m, "pg", return_value=db_rows) as sql, patch.object(
+            m, "containers", return_value={}
+        ), redirect_stdout(StringIO()) as output:
+            m.audit(state)
+        report = output.getvalue()
+        self.assertIn("LEGACY_KEEP oh_aaaaaaaaaaaaaaaa", report)
+        self.assertIn("TRACKED_KEEP oh_bbbbbbbbbbbbbbbb", report)
+        self.assertIn("UNTRACKED_KEEP oh_cccccccccccccccc", report)
+        self.assertIn("Audit is read-only", report)
+        sql.assert_called_once()
+
+    def test_inventory_missing_db_is_review_only(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+        with patch.object(m, "pg", return_value=""), patch.object(
+            m, "containers", return_value={}
+        ), redirect_stdout(StringIO()) as output:
+            m.audit({"a" * 64: {"role": "oh_aaaaaaaaaaaaaaaa"}})
+        self.assertIn("MISSING_DB_REVIEW", output.getvalue())
+
     def test_cleanup_no_running_agent_never_deletes(self):
         with patch.object(m, "containers", return_value={}):
             with patch.object(m, "pg") as sql:
