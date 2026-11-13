@@ -105,3 +105,11 @@ A safe `ERROR agent-server-conversation-...: OpenHands conversation API not read
 The event watcher, provision timer, and deletion reaper share one host-side advisory lock. Each invocation waits up to 20 seconds for the lock rather than immediately failing when provisioning and cleanup coincide. A timeout or non-lock failure still exits nonzero; the next timer provides reconciliation. The lock must not be removed, since concurrent state writes and PostgreSQL changes would be unsafe.
 
 To distinguish a lock timeout from another reaper error, inspect the full service journal (`journalctl -u openhands-postgres-reaper.service -n 50 --no-pager`) and run the **read-only** `openhands-postgres-manager cleanup`. Only the systemd reaper should invoke `cleanup --apply` during normal operation.
+
+## Low-impact periodic provisioning
+
+The provisioning timer remains enabled as event-loss reconciliation. For each live Docker runtime, the manager identifies its immutable full container ID and authenticated conversation mount from Docker metadata. A valid `runtime:<full container ID>` record with the matching role, credential filename, conversation ID and `absent_since: null` is **skipped immediately**. No `docker exec` into the agent container, no `sha256sum`, `stat`, credential read, API call, or PostgreSQL role/database query occurs on this fast path.
+
+Initial provisioning, a previously absent runtime returning, and untracked runtime discovery still use full authenticated provisioning and credential checks. The manager checks the shared PostgreSQL container's Docker health status before processing commands; this does **not** authenticate inside each agent container. The routine fast path deliberately does not detect externally modified/deleted credentials; use explicit investigation and an isolated repair process rather than overwriting agent credentials automatically. The reaper retains its final ownership, connection and Docker absence safety checks.
+
+After installing this change, restart the event watcher and re-enable `openhands-postgres-provision.timer`. Confirm its runs complete with no repeated `READY_RUNTIME` lines and no periodic `docker exec` in already-provisioned agent containers.
