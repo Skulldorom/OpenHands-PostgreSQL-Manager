@@ -192,6 +192,42 @@ class ManagerTests(unittest.TestCase):
                 }}, apply=True)
                 sql.assert_not_called()
 
+    def test_cleanup_never_deletes_when_catalog_empty(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            key = Path(temp) / "key"
+            key.write_text("example-test-key")
+            with patch.object(m, "KEY", key), patch.object(
+                m, "conversation_catalog", return_value=set()
+            ), patch.object(m, "pg") as sql:
+                m.cleanup({"conv:00000000-0000-4000-8000-000000000002": {
+                    "conversation": "00000000-0000-4000-8000-000000000002",
+                    "role": "oh_aaaaaaaaaaaaaaaa",
+                    "absent_since": 1
+                }}, apply=True)
+                sql.assert_not_called()
+
+    def test_cleanup_observation_grace_never_drops_database(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            key = Path(temp) / "key"
+            key.write_text("example-test-key")
+            live = "00000000-0000-4000-8000-000000000001"
+            target = "00000000-0000-4000-8000-000000000002"
+            def api(conv, secret):
+                return 200 if conv == live else 404
+            with patch.object(m, "KEY", key), patch.object(
+                m, "conversation_catalog", return_value={live}
+            ), patch.object(m, "api_status", side_effect=api), patch.object(
+                m, "containers", return_value={}
+            ), patch.object(m, "time") as tm, patch.object(m, "pg") as sql:
+                tm.time.return_value = 10000
+                m.cleanup({"conv:" + target: {
+                    "conversation": target, "role": "oh_aaaaaaaaaaaaaaaa",
+                    "absent_since": 9900
+                }}, apply=True)
+                sql.assert_not_called()
+
     def test_catalog_fails_on_duplicate_conversation(self):
         import io
         import json
