@@ -40,6 +40,23 @@ class ManagerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 m.remote_present("agent-server-conversation-test")
 
+    def test_api_route_uses_actual_agent_server_prefix(self):
+        self.assertEqual(
+            m.API,
+            "http://127.0.0.1:18000/api/conversations/",
+        )
+
+    def test_cleanup_auth_failure_does_not_delete(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            key = Path(temp) / "key"
+            key.write_text("example-test-key")
+            with patch.object(m, "KEY", key), patch.object(
+                m, "containers", return_value={"a"*64: ("agent-server-conversation-test", "00000000-0000-4000-8000-000000000001")}
+            ), patch.object(m, "api_status", return_value=401), patch.object(m, "pg") as sql:
+                m.cleanup({"a"*64: {"conversation": "00000000-0000-4000-8000-000000000001", "role": m.ident("a"*64)}}, apply=True)
+                sql.assert_not_called()
+
     def test_cleanup_no_running_agent_never_deletes(self):
         with patch.object(m, "containers", return_value={}):
             with patch.object(m, "pg") as sql:
