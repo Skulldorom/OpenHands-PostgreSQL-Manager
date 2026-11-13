@@ -52,9 +52,16 @@ class ManagerTests(unittest.TestCase):
             key = Path(temp) / "key"
             key.write_text("example-test-key")
             with patch.object(m, "KEY", key), patch.object(
-                m, "containers", return_value={"a"*64: ("agent-server-conversation-test", "00000000-0000-4000-8000-000000000001")}
-            ), patch.object(m, "api_status", return_value=401), patch.object(m, "pg") as sql:
-                m.cleanup({"a"*64: {"conversation": "00000000-0000-4000-8000-000000000001", "role": m.ident("a"*64)}}, apply=True)
+                m, "conversation_catalog", return_value={"00000000-0000-4000-8000-000000000001"}
+            ), patch.object(m, "api_status", return_value=401), patch.object(
+                m, "pg"
+            ) as sql:
+                m.cleanup({
+                    "conv:00000000-0000-4000-8000-000000000002": {
+                        "conversation": "00000000-0000-4000-8000-000000000002",
+                        "role": "oh_aaaaaaaaaaaaaaaa",
+                    }
+                }, apply=True)
                 sql.assert_not_called()
 
     def test_persistent_id_from_realistic_mount(self):
@@ -128,11 +135,80 @@ class ManagerTests(unittest.TestCase):
             m.audit({"a" * 64: {"role": "oh_aaaaaaaaaaaaaaaa"}})
         self.assertIn("MISSING_DB_REVIEW", output.getvalue())
 
-    def test_cleanup_no_running_agent_never_deletes(self):
-        with patch.object(m, "containers", return_value={}):
-            with patch.object(m, "pg") as sql:
-                m.cleanup({"a"*64: {"conversation": "dummy", "role": m.ident("a"*64)}}, apply=True)
+    def test_cleanup_without_active_runtime_preserves_catalog_conversation(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            key = Path(temp) / "key"
+            key.write_text("example-test-key")
+            conv = "00000000-0000-4000-8000-000000000001"
+            with patch.object(m, "KEY", key), patch.object(
+                m, "conversation_catalog", return_value={conv}
+            ), patch.object(m, "api_status", return_value=200), patch.object(
+                m, "containers", return_value={}
+            ), patch.object(m, "pg") as sql:
+                m.cleanup({"conv:" + conv: {
+                    "conversation": conv, "role": "oh_aaaaaaaaaaaaaaaa",
+                    "absent_since": None,
+                }}, apply=True)
                 sql.assert_not_called()
+
+    def test_deleted_conversation_requires_first_observation(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            key = Path(temp) / "key"
+            key.write_text("example-test-key")
+            live = "00000000-0000-4000-8000-000000000001"
+            target = "00000000-0000-4000-8000-000000000002"
+            state = {"conv:" + target: {
+                "conversation": target, "role": "oh_aaaaaaaaaaaaaaaa",
+                "absent_since": None,
+            }}
+            def api(conv, secret):
+                return 200 if conv == live else 404
+            with patch.object(m, "KEY", key), patch.object(
+                m, "conversation_catalog", return_value={live}
+            ), patch.object(m, "api_status", side_effect=api), patch.object(
+                m, "containers", return_value={}
+            ), patch.object(m, "pg") as sql, patch.object(m, "save_state") as saved:
+                m.cleanup(state, apply=True)
+                sql.assert_not_called()
+                saved.assert_called_once()
+                self.assertIsInstance(state["conv:" + target]["absent_since"], int)
+
+    def test_cleanup_retains_legacy_records(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            key = Path(temp) / "key"
+            key.write_text("example-test-key")
+            live = "00000000-0000-4000-8000-000000000001"
+            with patch.object(m, "KEY", key), patch.object(
+                m, "conversation_catalog", return_value={live}
+            ), patch.object(m, "api_status", return_value=200), patch.object(
+                m, "containers", return_value={}
+            ), patch.object(m, "pg") as sql:
+                m.cleanup({"a" * 64: {
+                    "conversation": "temporary-runtime",
+                    "role": "oh_aaaaaaaaaaaaaaaa",
+                }}, apply=True)
+                sql.assert_not_called()
+
+    def test_catalog_fails_on_duplicate_conversation(self):
+        import io
+        import json
+        conv = "00000000-0000-4000-8000-000000000001"
+        payload = {"items": [{"id": conv}, {"id": conv}], "next_page_id": None}
+        class Response:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, *args):
+                return json.dumps(payload).encode()
+        with patch.object(m.urllib.request, "urlopen", return_value=Response()):
+            with self.assertRaises(RuntimeError):
+                m.conversation_catalog("test-key")
+
 
 if __name__ == "__main__":
     unittest.main()
