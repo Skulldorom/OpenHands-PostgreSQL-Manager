@@ -1,0 +1,16 @@
+[Unit]
+Description=Watch OpenHands Docker container lifecycle for PostgreSQL provisioning and cleanup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/openhands-postgres-manager watch
+Restart=always
+RestartSec=10
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
