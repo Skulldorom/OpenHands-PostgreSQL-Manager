@@ -569,7 +569,7 @@ def trigger_manager(action):
     """Use the same lock as both timers; missed events are reconciled later."""
     if action not in ("provision", "cleanup"):
         raise ValueError("invalid lifecycle action")
-    argv = ["/usr/bin/flock", "-n", "/run/openhands-postgres-manager.lock",
+    argv = ["/usr/bin/flock", "-w", "20", "/run/openhands-postgres-manager.lock",
             "/usr/local/sbin/openhands-postgres-manager", action]
     env = os.environ.copy()
     if action == "cleanup":
