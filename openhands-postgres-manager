@@ -242,13 +242,21 @@ def runtime_record_key(cid):
 
 def runtime_provision(cid, name, conv, state):
     """Each Docker runtime owns one disposable database, never its conversation."""
-    validated_conversation(conv)
     key = runtime_record_key(cid)
     if key in state:
         entry = state[key]
-        if entry.get("role") != ident(cid) or entry.get("credential_file") != cid + ".env":
+        if (entry.get("role") != ident(cid)
+                or entry.get("credential_file") != cid + ".env"
+                or entry.get("conversation") != conv):
             raise RuntimeError("runtime state mismatch")
-    else:
+        # Records are saved only after the database, authentication, remote
+        # credential delivery and file mode checks have all succeeded.
+        # Reconciliation should not enter an already-provisioned runtime.
+        if entry.get("absent_since") is None:
+            return
+        # A previously absent runtime must undergo full revalidation.
+    validated_conversation(conv)
+    if key not in state:
         # An older persistent-conversation deployment may already have
         # populated this exact container. Never replace its credentials.
         if remote_present(name):
