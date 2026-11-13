@@ -56,7 +56,7 @@ systemctl status openhands-postgres-reaper.timer --no-pager
 journalctl -u openhands-postgres-reaper.service -n 40 --no-pager
 ```
 
-The first applied run marks absence. At least one hour later, a subsequent applied run can remove **one** eligible runtime database. Docker events trigger immediate provisioning and absence observation; the timer checks about every 15 minutes as fallback. Do not speed up or bypass the five-minute grace for production testing.
+The first applied run marks absence. At least five minutes later, a subsequent applied run can remove **one** eligible runtime database. Docker events trigger immediate provisioning and absence observation; the timer checks about every 15 minutes as fallback. Do not speed up or bypass the five-minute grace for production testing.
 
 ## Emergency stop
 
