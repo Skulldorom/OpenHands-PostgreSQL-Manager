@@ -76,6 +76,20 @@ def save_state(obj):
     finally:
         tmp.unlink(missing_ok=True)
 
+def persistent_id_from_inspect(info):
+    """Use the conversation bind mount, never the ephemeral container name."""
+    matches = []
+    for mount in info.get("Mounts", []):
+        if mount.get("Destination", "").startswith("/var/openhands/conversations/"):
+            dest = mount["Destination"].rsplit("/", 1)[-1]
+            source = mount.get("Source", "").rsplit("/", 1)[-1]
+            if re.fullmatch(r"[0-9a-f]{32}", dest) and dest == source:
+                matches.append(str(uuid.UUID(hex=dest)))
+    if len(matches) != 1:
+        raise RuntimeError("cannot uniquely map runtime to persistent conversation")
+    return matches[0]
+
+
 def containers(all_containers=False):
     args = ["docker", "ps"]
     if all_containers:
@@ -85,25 +99,59 @@ def containers(all_containers=False):
     for name in run(args).splitlines():
         if not name.startswith(PREFIX):
             continue
+        # Verify the runtime name is OpenHands-shaped but never treat it as its identity.
         try:
-            conversation = str(uuid.UUID(name[len(PREFIX):]))
+            uuid.UUID(name[len(PREFIX):])
         except ValueError:
             continue
-        cid = run(["docker", "inspect", "-f", "{{.Id}}", name])
+        info = json.loads(run(["docker", "inspect", name]))[0]
+        cid = info["Id"]
         if re.fullmatch(r"[0-9a-f]{64}", cid):
-            found[cid] = (name, conversation)
+            found[cid] = (name, persistent_id_from_inspect(info))
     return found
+
+
+def validated_conversation(conv):
+    if not KEY.is_file() or KEY.is_symlink():
+        raise RuntimeError("OpenHands API key unavailable")
+    secret = KEY.read_text().strip()
+    if not secret or api_status(conv, secret) != 200:
+        raise RuntimeError("persistent conversation not verified by authenticated API")
+
+
+def record_for_conversation(state, conv, cid):
+    key = "conv:" + conv
+    if key in state:
+        entry = state[key]
+        if entry.get("conversation") != conv:
+            raise RuntimeError("conversation state mismatch")
+        return key, entry
+    # Adopt a tracked legacy runtime only while that exact runtime remains
+    # present and its mount and API identity have been verified.
+    legacy = state.get(cid)
+    if legacy:
+        if legacy.get("role") != ident(cid):
+            raise RuntimeError("legacy state role mismatch")
+        return key, {"conversation": conv, "role": legacy["role"],
+                     "credential_file": cid + ".env",
+                     "created_at": legacy.get("created_at", int(time.time())),
+                     "absent_since": None}
+    return key, {"conversation": conv, "role": "oh_" + hashlib.sha256(conv.encode()).hexdigest()[:16],
+                 "credential_file": "conversation-" + conv.replace("-", "") + ".env",
+                 "created_at": int(time.time()), "absent_since": None}
 
 def db_status(role):
     r = pg(f"SELECT count(*) FROM pg_roles WHERE rolname={sq(role)} AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication;")
     d = pg(f"SELECT count(*) FROM pg_database d JOIN pg_roles r ON d.datdba=r.oid WHERE d.datname={sq(role)} AND r.rolname={sq(role)};")
     return r == "1", d == "1"
 
-def credential_path(cid):
-    return BASE / (cid + ".env")
+def credential_path(filename):
+    if not re.fullmatch(r"(?:[0-9a-f]{64}|conversation-[0-9a-f]{32})\.env", filename):
+        raise ValueError("invalid credential filename")
+    return BASE / filename
 
-def credentials(cid, role):
-    path = credential_path(cid)
+def credentials(filename, role):
+    path = credential_path(filename)
     if path.is_symlink():
         raise RuntimeError("credential symlink")
     if path.exists():
@@ -141,43 +189,44 @@ def remote_present(name):
     return result.returncode == 0
 
 def provision_one(cid, name, conv, state):
-    role = ident(cid)
-    path, password = credentials(cid, role)
+    validated_conversation(conv)
+    key, entry = record_for_conversation(state, conv, cid)
+    role = entry["role"]
+    path, password = credentials(entry["credential_file"], role)
     role_ok, db_ok = db_status(role)
     if not role_ok and not db_ok:
         pg(f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20;")
         role_ok = True
     if role_ok and not db_ok:
-        # Only resume an interrupted creation if this manager already recorded the identity,
-        # or it has just created the role in this execution. Never reset an unknown password.
-        authentication_possible = True
         try:
-            # No database yet; verify role password against maintenance DB instead.
-            test = run(["docker", "exec", "-e", "PGPASSWORD", PG, "psql", "-X",
-                        "-h", "127.0.0.1", "-p", "5432", "-U", role, "-d", "postgres",
-                        "-At", "-c", "SELECT current_user;"],
-                       env=dict(os.environ, PGPASSWORD=password))
-            authentication_possible = test == role
+            result = run(["docker", "exec", "-e", "PGPASSWORD", PG, "psql", "-X",
+                          "-h", "127.0.0.1", "-p", "5432", "-U", role, "-d", "postgres",
+                          "-At", "-c", "SELECT current_user;"],
+                         env=dict(os.environ, PGPASSWORD=password))
         except subprocess.CalledProcessError:
-            authentication_possible = False
-        if not authentication_possible:
-            raise RuntimeError("orphan role with mismatched password; manual recovery required")
+            raise RuntimeError("role password not verified; manual recovery required")
+        if result != role:
+            raise RuntimeError("role authentication mismatch")
         pg(f"CREATE DATABASE {role} OWNER {role} CONNECTION LIMIT 20;")
     elif not role_ok and db_ok:
-        raise RuntimeError("unexpected database without restricted owner")
+        raise RuntimeError("invalid database owner")
     pg(f"REVOKE ALL ON DATABASE {role} FROM PUBLIC;")
     authentication(role, password)
     if remote_present(name):
         remote = run(["docker", "exec", name, "sha256sum", DEST]).split()[0]
         if remote != hashlib.sha256(path.read_bytes()).hexdigest():
-            raise RuntimeError("remote credentials differ; refusing overwrite")
+            raise RuntimeError("existing runtime credentials differ; refuse overwrite")
     else:
         run(["docker", "cp", str(path), f"{name}:{DEST}"])
     if run(["docker", "exec", name, "stat", "-c", "%a", DEST]) != "600":
         raise RuntimeError("agent credentials not mode 0600")
-    state[cid] = {"conversation": conv, "role": role,
-                  "created_at": state.get(cid, {}).get("created_at", int(time.time())),
-                  "absent_since": None}
+    validated_conversation(conv)
+    state[key] = entry
+    if cid in state and cid != key:
+        # Retain legacy evidence but avoid treating the same database as two
+        # independent cleanup candidates.
+        state[cid]["migrated_to"] = key
+    state[key]["absent_since"] = None
     save_state(state)
     print("READY", conv, role)
 
@@ -210,6 +259,8 @@ def cleanup(state, apply=False):
     all_conversations = {conv for _,conv in containers(True).values()}
     now = int(time.time())
     for cid, entry in list(state.items()):
+        if not cid.startswith("conv:"):
+            continue  # Unknown legacy mappings are retained indefinitely.
         conv = entry["conversation"]
         if conv in all_conversations:
             if entry.get("absent_since") is not None and apply:
@@ -232,8 +283,8 @@ def cleanup(state, apply=False):
         if now - entry["absent_since"] < GRACE:
             print("KEEP", conv, "grace period")
             continue
-        role = ident(cid)
-        if entry["role"] != role:
+        role = entry["role"]
+        if cid != "conv:" + conv or not re.fullmatch(r"oh_[0-9a-f]{16}", role):
             raise RuntimeError("state identity mismatch")
         if not apply:
             print("WOULD_DELETE", conv, role)
@@ -245,7 +296,7 @@ def cleanup(state, apply=False):
             raise RuntimeError("database ownership check failed")
         pg(f"DROP DATABASE {role} WITH (FORCE);")
         pg(f"DROP ROLE {role};")
-        credential_path(cid).unlink(missing_ok=True)
+        credential_path(entry["credential_file"]).unlink(missing_ok=True)
         del state[cid]
         save_state(state)
         print("DELETED", conv, role)
